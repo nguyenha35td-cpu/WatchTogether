@@ -313,11 +313,11 @@ export default function WatchTogetherPage() {
       setVideos((prev) => [...prev, tempVideo]);
 
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+        const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
         const formData = new FormData();
         formData.append("video", file);
 
-        const resp = await fetch(`${apiUrl}/api/upload`, {
+        const resp = await fetch(`${apiBase}/api/upload`, {
           method: "POST",
           body: formData,
         });
@@ -328,8 +328,8 @@ export default function WatchTogetherPage() {
         }
 
         const data = await resp.json();
-        // Build full URL from server response
-        const videoUrl = `${apiUrl}${data.url}`;
+        // Use relative URL so it works on any deployment host
+        const videoUrl = `${apiBase}${data.url}`;
 
         const newVideo: VideoItem = {
           id: tempId,
