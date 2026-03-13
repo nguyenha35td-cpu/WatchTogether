@@ -302,6 +302,23 @@ export default function WatchTogetherPage() {
     [currentVideo, ws]
   );
 
+  // ==================== Sync currentVideo with videos array ====================
+  // When videos array is updated (e.g. subtitleTracks added), sync currentVideo
+  useEffect(() => {
+    if (!currentVideo) return;
+    const updated = videos.find((v) => v.id === currentVideo.id);
+    if (!updated) return;
+    // Only update if subtitleTracks changed (avoid infinite loops)
+    if (
+      updated.subtitleTracks &&
+      updated.subtitleTracks !== currentVideo.subtitleTracks
+    ) {
+      setCurrentVideo((prev) =>
+        prev ? { ...prev, subtitleTracks: updated.subtitleTracks } : prev
+      );
+    }
+  }, [videos, currentVideo]);
+
   // ==================== Subtitle Helpers ====================
 
   const backendUrl =
@@ -466,7 +483,14 @@ export default function WatchTogetherPage() {
           src: videoUrl,
         };
 
-        // Probe subtitle tracks in the background (don't block)
+        // First update the video entry with the finalized info
+        setVideos((prev) =>
+          prev.map((v) => (v.id === tempId ? newVideo : v))
+        );
+        ws.addToPlaylist(newVideo);
+
+        // Probe subtitle tracks AFTER the video entry is finalized
+        // Use merge update to avoid overwriting
         probeSubtitleTracks(videoUrl).then((tracks) => {
           if (tracks.length > 0) {
             setVideos((prev) =>
@@ -476,11 +500,6 @@ export default function WatchTogetherPage() {
             );
           }
         });
-
-        setVideos((prev) =>
-          prev.map((v) => (v.id === tempId ? newVideo : v))
-        );
-        ws.addToPlaylist(newVideo);
       } catch (err) {
         console.error("Upload failed:", err);
         // Remove the temp entry on failure
