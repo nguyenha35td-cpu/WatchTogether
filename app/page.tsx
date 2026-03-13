@@ -293,6 +293,33 @@ export default function WatchTogetherPage() {
     setIsSynced(true);
   }, [ws]);
 
+  // ==================== Subtitle Helpers (moved before handleSelectVideo) ====================
+  const backendUrl =
+    process.env.NEXT_PUBLIC_API_URL ||
+    "https://watchtogether-production-b75c.up.railway.app";
+
+  // Extract filename from video URL like "https://...railway.app/uploads/1234-5678.mkv"
+  const extractFilenameFromUrl = useCallback((videoSrc: string): string | null => {
+    const match = videoSrc.match(/\/uploads\/([^/?#]+)/);
+    return match ? match[1] : null;
+  }, []);
+
+  // Probe subtitle tracks for a video file via backend API
+  const probeSubtitleTracks = useCallback(async (videoSrc: string): Promise<SubtitleTrack[]> => {
+    const filename = extractFilenameFromUrl(videoSrc);
+    if (!filename) return [];
+
+    try {
+      const res = await fetch(`${backendUrl}/api/subtitles/${encodeURIComponent(filename)}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.tracks || [];
+    } catch (err) {
+      console.error("Failed to probe subtitles:", err);
+      return [];
+    }
+  }, [backendUrl, extractFilenameFromUrl]);
+
   // ==================== Video Actions ====================
   const handleSelectVideo = useCallback(
     (video: VideoItem) => {
@@ -350,33 +377,7 @@ export default function WatchTogetherPage() {
     }
   }, [videos, currentVideo]);
 
-  // ==================== Subtitle Helpers ====================
-
-  const backendUrl =
-    process.env.NEXT_PUBLIC_API_URL ||
-    "https://watchtogether-production-b75c.up.railway.app";
-
-  // Extract filename from video URL like "https://...railway.app/uploads/1234-5678.mkv"
-  const extractFilenameFromUrl = useCallback((videoSrc: string): string | null => {
-    const match = videoSrc.match(/\/uploads\/([^/?#]+)/);
-    return match ? match[1] : null;
-  }, []);
-
-  // Probe subtitle tracks for a video file via backend API
-  const probeSubtitleTracks = useCallback(async (videoSrc: string): Promise<SubtitleTrack[]> => {
-    const filename = extractFilenameFromUrl(videoSrc);
-    if (!filename) return [];
-
-    try {
-      const res = await fetch(`${backendUrl}/api/subtitles/${encodeURIComponent(filename)}`);
-      if (!res.ok) return [];
-      const data = await res.json();
-      return data.tracks || [];
-    } catch (err) {
-      console.error("Failed to probe subtitles:", err);
-      return [];
-    }
-  }, [backendUrl, extractFilenameFromUrl]);
+  // ==================== Subtitle Extraction ====================
 
   // Extract a specific subtitle track VTT
   const extractSubtitleVTT = useCallback(async (videoSrc: string, streamIndex: number): Promise<string | null> => {
