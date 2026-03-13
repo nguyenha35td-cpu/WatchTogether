@@ -48,7 +48,7 @@ const VIDEO_EXTENSIONS = new Set([
 
 const upload = multer({
   storage,
-  limits: { fileSize: 2 * 1024 * 1024 * 1024 }, // 2GB max
+  limits: { fileSize: 8 * 1024 * 1024 * 1024 }, // 8GB max
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     if (file.mimetype.startsWith("video/") || VIDEO_EXTENSIONS.has(ext)) {
@@ -76,7 +76,7 @@ app.post("/api/upload", upload.single("video"), (req, res) => {
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === "LIMIT_FILE_SIZE") {
-      return res.status(413).json({ error: "文件大小超过 2GB 限制" });
+      return res.status(413).json({ error: "文件大小超过 8GB 限制" });
     }
     return res.status(400).json({ error: err.message });
   }
