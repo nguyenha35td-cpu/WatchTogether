@@ -8,6 +8,21 @@ const path = require("path");
 const fs = require("fs");
 const { execFile } = require("child_process");
 
+// Get ffmpeg/ffprobe binary paths from npm packages (works on any platform)
+let ffmpegPath, ffprobePath;
+try {
+  ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
+  ffprobePath = require("@ffprobe-installer/ffprobe").path;
+  console.log("[FFmpeg] Using npm-installed binaries:");
+  console.log("  ffmpeg:", ffmpegPath);
+  console.log("  ffprobe:", ffprobePath);
+} catch (e) {
+  // Fallback to system PATH
+  ffmpegPath = "ffmpeg";
+  ffprobePath = "ffprobe";
+  console.log("[FFmpeg] npm packages not found, falling back to system PATH");
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -191,7 +206,7 @@ app.use("/subtitles", express.static(subtitlesDir, {
 // Helper: run ffprobe to get subtitle track info from a video file
 function probeSubtitles(filePath) {
   return new Promise((resolve, reject) => {
-    execFile("ffprobe", [
+    execFile(ffprobePath, [
       "-v", "quiet",
       "-print_format", "json",
       "-show_streams",
@@ -224,7 +239,7 @@ function probeSubtitles(filePath) {
 // Helper: extract a subtitle stream to WebVTT format using ffmpeg
 function extractSubtitleToVTT(videoPath, streamIndex, outputPath) {
   return new Promise((resolve, reject) => {
-    execFile("ffmpeg", [
+    execFile(ffmpegPath, [
       "-y",
       "-i", videoPath,
       "-map", `0:s:${streamIndex}`,  // select the Nth subtitle stream
@@ -386,12 +401,12 @@ app.get("/health", (req, res) => {
 
 // Debug: check ffprobe availability and list uploaded files
 app.get("/api/debug/ffprobe", async (req, res) => {
-  const result = { ffprobeAvailable: false, ffmpegAvailable: false, uploads: [], subtitles: [] };
+  const result = { ffprobeAvailable: false, ffmpegAvailable: false, ffprobePath, ffmpegPath, uploads: [], subtitles: [] };
 
   // Check ffprobe
   try {
     await new Promise((resolve, reject) => {
-      execFile("ffprobe", ["-version"], { timeout: 5000 }, (err, stdout) => {
+      execFile(ffprobePath, ["-version"], { timeout: 5000 }, (err, stdout) => {
         if (err) return reject(err);
         result.ffprobeAvailable = true;
         result.ffprobeVersion = stdout.split("\n")[0];
@@ -405,7 +420,7 @@ app.get("/api/debug/ffprobe", async (req, res) => {
   // Check ffmpeg
   try {
     await new Promise((resolve, reject) => {
-      execFile("ffmpeg", ["-version"], { timeout: 5000 }, (err, stdout) => {
+      execFile(ffmpegPath, ["-version"], { timeout: 5000 }, (err, stdout) => {
         if (err) return reject(err);
         result.ffmpegAvailable = true;
         result.ffmpegVersion = stdout.split("\n")[0];
