@@ -307,15 +307,20 @@ export default function WatchTogetherPage() {
   // Probe subtitle tracks for a video file via backend API
   const probeSubtitleTracks = useCallback(async (videoSrc: string): Promise<SubtitleTrack[]> => {
     const filename = extractFilenameFromUrl(videoSrc);
+    console.log("[Subtitle] probeSubtitleTracks called, videoSrc:", videoSrc, "filename:", filename);
     if (!filename) return [];
 
     try {
-      const res = await fetch(`${backendUrl}/api/subtitles/${encodeURIComponent(filename)}`);
+      const url = `${backendUrl}/api/subtitles/${encodeURIComponent(filename)}`;
+      console.log("[Subtitle] Fetching:", url);
+      const res = await fetch(url);
+      console.log("[Subtitle] Response status:", res.status);
       if (!res.ok) return [];
       const data = await res.json();
+      console.log("[Subtitle] Tracks received:", data);
       return data.tracks || [];
     } catch (err) {
-      console.error("Failed to probe subtitles:", err);
+      console.error("[Subtitle] Failed to probe subtitles:", err);
       return [];
     }
   }, [backendUrl, extractFilenameFromUrl]);

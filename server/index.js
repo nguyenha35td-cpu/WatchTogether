@@ -384,6 +384,55 @@ app.get("/health", (req, res) => {
   res.json({ status: "ok", rooms: rooms.size });
 });
 
+// Debug: check ffprobe availability and list uploaded files
+app.get("/api/debug/ffprobe", async (req, res) => {
+  const result = { ffprobeAvailable: false, ffmpegAvailable: false, uploads: [], subtitles: [] };
+
+  // Check ffprobe
+  try {
+    await new Promise((resolve, reject) => {
+      execFile("ffprobe", ["-version"], { timeout: 5000 }, (err, stdout) => {
+        if (err) return reject(err);
+        result.ffprobeAvailable = true;
+        result.ffprobeVersion = stdout.split("\n")[0];
+        resolve(stdout);
+      });
+    });
+  } catch (e) {
+    result.ffprobeError = e.message;
+  }
+
+  // Check ffmpeg
+  try {
+    await new Promise((resolve, reject) => {
+      execFile("ffmpeg", ["-version"], { timeout: 5000 }, (err, stdout) => {
+        if (err) return reject(err);
+        result.ffmpegAvailable = true;
+        result.ffmpegVersion = stdout.split("\n")[0];
+        resolve(stdout);
+      });
+    });
+  } catch (e) {
+    result.ffmpegError = e.message;
+  }
+
+  // List uploaded files
+  try {
+    result.uploads = fs.readdirSync(uploadsDir);
+  } catch (e) {
+    result.uploadsError = e.message;
+  }
+
+  // List subtitle files
+  try {
+    result.subtitles = fs.readdirSync(subtitlesDir);
+  } catch (e) {
+    result.subtitlesError = e.message;
+  }
+
+  res.json(result);
+});
+
 // Check if room exists
 app.get("/api/rooms/:roomId", (req, res) => {
   const room = rooms.get(req.params.roomId);
