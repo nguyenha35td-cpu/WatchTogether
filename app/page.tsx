@@ -88,6 +88,22 @@ export default function WatchTogetherPage() {
       setIsJoining(false);
       setJoinError(null);
       setIsSynced(true);
+
+      // Sync playback state after a short delay to allow video element to mount
+      if (room.currentVideoId && room.playbackState) {
+        setTimeout(() => {
+          if (playerRef.current) {
+            const elapsed = room.playbackState.isPlaying
+              ? (Date.now() - room.playbackState.lastUpdate) / 1000
+              : 0;
+            const syncTime = room.playbackState.currentTime + elapsed;
+            playerRef.current.seekTo(syncTime);
+            if (room.playbackState.isPlaying) {
+              playerRef.current.play();
+            }
+          }
+        }, 500);
+      }
     },
 
     onError: (message) => {
@@ -104,15 +120,24 @@ export default function WatchTogetherPage() {
     },
 
     onPlaylistUpdated: (playlist, updatedCurrentVideoId) => {
-      setVideos(
-        playlist.map((v) => ({
+      // Merge server playlist while preserving local uploading entries
+      setVideos((prev) => {
+        const uploadingVideos = prev.filter(
+          (v) => v.uploadProgress !== undefined
+        );
+        const serverVideos = playlist.map((v) => ({
           id: v.id,
           title: v.title,
           thumbnail: v.thumbnail,
           duration: v.duration,
           src: v.src,
-        }))
-      );
+        }));
+        // Append uploading entries that aren't yet in the server list
+        const uploadingNotInServer = uploadingVideos.filter(
+          (u) => !serverVideos.some((s) => s.id === u.id)
+        );
+        return [...serverVideos, ...uploadingNotInServer];
+      });
       if (updatedCurrentVideoId !== undefined) {
         if (updatedCurrentVideoId === null) {
           setCurrentVideo(null);
@@ -339,11 +364,30 @@ export default function WatchTogetherPage() {
         const data = await uploadPromise;
         const videoUrl = `${backendUrl}${data.url}`;
 
+        // Probe video duration using a temporary video element
+        const durationStr = await new Promise<string>((resolve) => {
+          const probe = document.createElement("video");
+          probe.preload = "metadata";
+          probe.onloadedmetadata = () => {
+            const dur = probe.duration;
+            if (dur && isFinite(dur)) {
+              const m = Math.floor(dur / 60);
+              const s = Math.floor(dur % 60);
+              resolve(`${m}:${s.toString().padStart(2, "0")}`);
+            } else {
+              resolve("--:--");
+            }
+            probe.src = ""; // release
+          };
+          probe.onerror = () => resolve("--:--");
+          probe.src = videoUrl;
+        });
+
         const newVideo: VideoItem = {
           id: tempId,
           title: file.name.replace(/\.[^/.]+$/, ""),
           thumbnail: "",
-          duration: "--:--",
+          duration: durationStr,
           src: videoUrl,
         };
 
