@@ -61,28 +61,33 @@ export default function WatchTogetherPage() {
       setRoomId(joinedRoomId);
       setClientId(newClientId);
       setParticipants(room.participants);
-      setVideos(
+      setVideos((prev) =>
         room.playlist.length > 0
-          ? room.playlist.map((v) => ({
-              id: v.id,
-              title: v.title,
-              thumbnail: v.thumbnail,
-              duration: v.duration,
-              src: v.src,
-            }))
+          ? room.playlist.map((v) => {
+              const existing = prev.find((p) => p.id === v.id);
+              return {
+                id: v.id,
+                title: v.title,
+                thumbnail: v.thumbnail,
+                duration: v.duration,
+                src: v.src,
+                ...(existing?.subtitleTracks ? { subtitleTracks: existing.subtitleTracks } : {}),
+              };
+            })
           : []
       );
       // Set current video if room has one
       if (room.currentVideoId) {
         const video = room.playlist.find((v) => v.id === room.currentVideoId);
         if (video) {
-          setCurrentVideo({
+          setCurrentVideo((prev) => ({
             id: video.id,
             title: video.title,
             thumbnail: video.thumbnail,
             duration: video.duration,
             src: video.src,
-          });
+            ...(prev?.subtitleTracks ? { subtitleTracks: prev.subtitleTracks } : {}),
+          }));
         }
       }
       setInRoom(true);
@@ -121,18 +126,23 @@ export default function WatchTogetherPage() {
     },
 
     onPlaylistUpdated: (playlist, updatedCurrentVideoId) => {
-      // Merge server playlist while preserving local uploading entries
+      // Merge server playlist while preserving local uploading entries AND subtitleTracks
       setVideos((prev) => {
         const uploadingVideos = prev.filter(
           (v) => v.uploadProgress !== undefined
         );
-        const serverVideos = playlist.map((v) => ({
-          id: v.id,
-          title: v.title,
-          thumbnail: v.thumbnail,
-          duration: v.duration,
-          src: v.src,
-        }));
+        const serverVideos = playlist.map((v) => {
+          // Preserve locally-probed subtitleTracks if server doesn't carry them
+          const existing = prev.find((p) => p.id === v.id);
+          return {
+            id: v.id,
+            title: v.title,
+            thumbnail: v.thumbnail,
+            duration: v.duration,
+            src: v.src,
+            ...(existing?.subtitleTracks ? { subtitleTracks: existing.subtitleTracks } : {}),
+          };
+        });
         // Append uploading entries that aren't yet in the server list
         const uploadingNotInServer = uploadingVideos.filter(
           (u) => !serverVideos.some((s) => s.id === u.id)
@@ -190,14 +200,18 @@ export default function WatchTogetherPage() {
 
     onSyncState: (state) => {
       if (state.playlist.length > 0) {
-        setVideos(
-          state.playlist.map((v) => ({
-            id: v.id,
-            title: v.title,
-            thumbnail: v.thumbnail,
-            duration: v.duration,
-            src: v.src,
-          }))
+        setVideos((prev) =>
+          state.playlist.map((v) => {
+            const existing = prev.find((p) => p.id === v.id);
+            return {
+              id: v.id,
+              title: v.title,
+              thumbnail: v.thumbnail,
+              duration: v.duration,
+              src: v.src,
+              ...(existing?.subtitleTracks ? { subtitleTracks: existing.subtitleTracks } : {}),
+            };
+          })
         );
       }
       if (state.currentVideoId) {
@@ -205,13 +219,15 @@ export default function WatchTogetherPage() {
           (v) => v.id === state.currentVideoId
         );
         if (video) {
-          setCurrentVideo({
+          setCurrentVideo((prev) => ({
             id: video.id,
             title: video.title,
             thumbnail: video.thumbnail,
             duration: video.duration,
             src: video.src,
-          });
+            ...(prev?.subtitleTracks ? { subtitleTracks: prev.subtitleTracks } : {}),
+          }));
+        }
         }
       }
       setIsSynced(true);
@@ -287,8 +303,24 @@ export default function WatchTogetherPage() {
       ws.selectVideo(video.id);
       // Optimistically restore sync status
       setTimeout(() => setIsSynced(true), 500);
+
+      // Auto-probe subtitles if not yet probed and is an uploaded file
+      if (!video.subtitleTracks && video.src.includes("/uploads/")) {
+        probeSubtitleTracks(video.src).then((tracks) => {
+          if (tracks.length > 0) {
+            setVideos((prev) =>
+              prev.map((v) =>
+                v.id === video.id ? { ...v, subtitleTracks: tracks } : v
+              )
+            );
+            setCurrentVideo((prev) =>
+              prev && prev.id === video.id ? { ...prev, subtitleTracks: tracks } : prev
+            );
+          }
+        });
+      }
     },
-    [ws]
+    [ws, probeSubtitleTracks]
   );
 
   const handleDeleteVideo = useCallback(
