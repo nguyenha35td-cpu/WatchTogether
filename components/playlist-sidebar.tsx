@@ -12,6 +12,8 @@ export interface VideoItem {
   thumbnail: string;
   duration: string;
   src: string;
+  /** Upload progress 0-100, undefined means not uploading */
+  uploadProgress?: number;
 }
 
 // Accepted video file extensions
@@ -123,12 +125,17 @@ export function PlaylistSidebar({
               <div
                 key={video.id}
                 className={cn(
-                  "group relative flex gap-3 p-2 rounded-lg cursor-pointer transition-all duration-200",
+                  "group relative flex gap-3 p-2 rounded-lg transition-all duration-200",
+                  video.uploadProgress !== undefined
+                    ? "opacity-80"
+                    : "cursor-pointer",
                   currentVideoId === video.id
                     ? "bg-sidebar-accent"
                     : "hover:bg-sidebar-accent/50"
                 )}
-                onClick={() => onSelectVideo(video)}
+                onClick={() => {
+                  if (video.uploadProgress === undefined) onSelectVideo(video);
+                }}
               >
                 {/* Thumbnail */}
                 <div className="relative w-24 h-14 rounded-md overflow-hidden bg-muted flex-shrink-0">
@@ -144,15 +151,25 @@ export function PlaylistSidebar({
                     </div>
                   )}
                   {/* Play overlay */}
-                  {currentVideoId === video.id && (
+                  {currentVideoId === video.id && video.uploadProgress === undefined && (
                     <div className="absolute inset-0 bg-primary/30 flex items-center justify-center">
                       <Play className="w-5 h-5 text-primary-foreground" fill="currentColor" />
                     </div>
                   )}
+                  {/* Upload progress overlay on thumbnail */}
+                  {video.uploadProgress !== undefined && (
+                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
+                      <span className="text-xs text-white font-semibold">
+                        {video.uploadProgress}%
+                      </span>
+                    </div>
+                  )}
                   {/* Duration badge */}
-                  <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/70 text-xs text-foreground font-mono">
-                    {video.duration}
-                  </div>
+                  {video.uploadProgress === undefined && (
+                    <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/70 text-xs text-foreground font-mono">
+                      {video.duration}
+                    </div>
+                  )}
                 </div>
 
                 {/* Info */}
@@ -163,20 +180,36 @@ export function PlaylistSidebar({
                   <h3 className="text-sm font-medium text-sidebar-foreground truncate">
                     {video.title}
                   </h3>
+                  {/* Upload progress bar */}
+                  {video.uploadProgress !== undefined && (
+                    <div className="mt-1.5 w-full">
+                      <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-primary rounded-full transition-all duration-300 ease-out"
+                          style={{ width: `${video.uploadProgress}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-muted-foreground mt-0.5">
+                        上传中 {video.uploadProgress}%
+                      </span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Delete Button */}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onDeleteVideo(video.id);
-                  }}
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
+                {video.uploadProgress === undefined && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onDeleteVideo(video.id);
+                    }}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                )}
               </div>
             ))
           )}

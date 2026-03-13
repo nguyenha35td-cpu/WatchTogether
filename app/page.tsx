@@ -19,30 +19,6 @@ const DEMO_VIDEOS: VideoItem[] = [
     duration: "9:56",
     src: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
   },
-  {
-    id: "2",
-    title: "Sintel",
-    thumbnail:
-      "https://upload.wikimedia.org/wikipedia/commons/thumb/4/45/Sintel_poster.jpg/220px-Sintel_poster.jpg",
-    duration: "14:48",
-    src: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4",
-  },
-  {
-    id: "3",
-    title: "Tears of Steel",
-    thumbnail:
-      "https://upload.wikimedia.org/wikipedia/commons/thumb/6/6c/Tears_of_Steel_frame_from_the_movie.jpg/220px-Tears_of_Steel_frame_from_the_movie.jpg",
-    duration: "12:14",
-    src: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4",
-  },
-  {
-    id: "4",
-    title: "Elephant Dream",
-    thumbnail:
-      "https://upload.wikimedia.org/wikipedia/commons/thumb/e/e8/Elephants_Dream_s5_both.jpg/220px-Elephants_Dream_s5_both.jpg",
-    duration: "10:53",
-    src: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ElephantsDream.mp4",
-  },
 ];
 
 export default function WatchTogetherPage() {
@@ -301,39 +277,66 @@ export default function WatchTogetherPage() {
 
   const handleUploadVideo = useCallback(
     async (file: File) => {
-      // Show a temporary entry with loading state
+      // Show a temporary entry with upload progress
       const tempId = Date.now().toString();
       const tempVideo: VideoItem = {
         id: tempId,
-        title: `⏳ 上传中: ${file.name.replace(/\.[^/.]+$/, "")}`,
+        title: file.name.replace(/\.[^/.]+$/, ""),
         thumbnail: "",
         duration: "--:--",
         src: "",
+        uploadProgress: 0,
       };
       setVideos((prev) => [...prev, tempVideo]);
 
-      try {
-        // Upload directly to backend (bypasses Vercel's 4.5MB body limit)
-        const backendUrl =
-          process.env.NEXT_PUBLIC_API_URL ||
-          "https://watchtogether-production-b75c.up.railway.app";
-        const formData = new FormData();
-        formData.append("video", file);
+      const backendUrl =
+        process.env.NEXT_PUBLIC_API_URL ||
+        "https://watchtogether-production-b75c.up.railway.app";
 
-        const resp = await fetch(`${backendUrl}/api/upload`, {
-          method: "POST",
-          body: formData,
+      const formData = new FormData();
+      formData.append("video", file);
+
+      // Use XMLHttpRequest to track upload progress
+      const xhr = new XMLHttpRequest();
+
+      const uploadPromise = new Promise<{ url: string }>((resolve, reject) => {
+        xhr.upload.addEventListener("progress", (e) => {
+          if (e.lengthComputable) {
+            const pct = Math.round((e.loaded / e.total) * 100);
+            setVideos((prev) =>
+              prev.map((v) =>
+                v.id === tempId ? { ...v, uploadProgress: pct } : v
+              )
+            );
+          }
         });
 
-        if (!resp.ok) {
-          const errData = await resp.json().catch(() => ({}));
-          throw new Error(
-            errData.error || `上传失败 (HTTP ${resp.status})`
-          );
-        }
+        xhr.addEventListener("load", () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            try {
+              resolve(JSON.parse(xhr.responseText));
+            } catch {
+              reject(new Error("服务器返回格式错误"));
+            }
+          } else {
+            try {
+              const errData = JSON.parse(xhr.responseText);
+              reject(new Error(errData.error || `上传失败 (HTTP ${xhr.status})`));
+            } catch {
+              reject(new Error(`上传失败 (HTTP ${xhr.status})`));
+            }
+          }
+        });
 
-        const data = await resp.json();
-        // Use full backend URL for video playback
+        xhr.addEventListener("error", () => reject(new Error("网络错误，上传失败")));
+        xhr.addEventListener("abort", () => reject(new Error("上传已取消")));
+
+        xhr.open("POST", `${backendUrl}/api/upload`);
+        xhr.send(formData);
+      });
+
+      try {
+        const data = await uploadPromise;
         const videoUrl = `${backendUrl}${data.url}`;
 
         const newVideo: VideoItem = {
