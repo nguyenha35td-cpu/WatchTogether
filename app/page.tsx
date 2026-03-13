@@ -228,7 +228,6 @@ export default function WatchTogetherPage() {
             ...(prev?.subtitleTracks ? { subtitleTracks: prev.subtitleTracks } : {}),
           }));
         }
-        }
       }
       setIsSynced(true);
     },
