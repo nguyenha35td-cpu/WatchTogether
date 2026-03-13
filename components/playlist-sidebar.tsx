@@ -19,12 +19,14 @@ export interface VideoItem {
 // Accepted video file extensions
 const VIDEO_ACCEPT = "video/*,.mkv,.avi,.wmv,.flv,.m4v,.ts,.mts,.3gp,.rmvb,.rm,.mov";
 
+const MAX_UPLOAD_FILES = 5;
+
 interface PlaylistSidebarProps {
   videos: VideoItem[];
   currentVideoId: string | null;
   onSelectVideo: (video: VideoItem) => void;
   onDeleteVideo: (id: string) => void;
-  onUploadVideo: (file: File) => void;
+  onUploadVideos: (files: File[]) => void;
   isOpen: boolean;
 }
 
@@ -33,30 +35,32 @@ export function PlaylistSidebar({
   currentVideoId,
   onSelectVideo,
   onDeleteVideo,
-  onUploadVideo,
+  onUploadVideos,
   isOpen,
 }: PlaylistSidebarProps) {
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const filterVideoFiles = (files: File[]): File[] => {
+    const videoExts = /\.(mp4|webm|ogg|ogv|mov|mkv|avi|wmv|flv|m4v|ts|mts|3gp|rmvb|rm)$/i;
+    return files
+      .filter((file) => file.type.startsWith("video/") || videoExts.test(file.name))
+      .slice(0, MAX_UPLOAD_FILES);
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
-    const files = Array.from(e.dataTransfer.files);
-    // Check for video file by MIME or extension
-    const videoExts = /\.(mp4|webm|ogg|ogv|mov|mkv|avi|wmv|flv|m4v|ts|mts|3gp|rmvb|rm)$/i;
-    const videoFile = files.find(
-      (file) => file.type.startsWith("video/") || videoExts.test(file.name)
-    );
-    if (videoFile) {
-      onUploadVideo(videoFile);
+    const videoFiles = filterVideoFiles(Array.from(e.dataTransfer.files));
+    if (videoFiles.length > 0) {
+      onUploadVideos(videoFiles);
     }
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      onUploadVideo(file);
+    const videoFiles = filterVideoFiles(Array.from(e.target.files || []));
+    if (videoFiles.length > 0) {
+      onUploadVideos(videoFiles);
     }
     // Reset so same file can be re-selected
     if (e.target) e.target.value = "";
@@ -98,6 +102,7 @@ export function PlaylistSidebar({
             ref={fileInputRef}
             type="file"
             accept={VIDEO_ACCEPT}
+            multiple
             className="hidden"
             onChange={handleFileSelect}
           />
@@ -106,7 +111,7 @@ export function PlaylistSidebar({
               <Upload className="w-5 h-5" />
             </div>
             <span className="text-sm">拖放或点击上传</span>
-            <span className="text-xs opacity-60">MP4 / MKV / AVI / MOV 等</span>
+            <span className="text-xs opacity-60">支持多选，最多 {MAX_UPLOAD_FILES} 个视频</span>
           </div>
         </div>
       </div>
@@ -137,52 +142,49 @@ export function PlaylistSidebar({
                   if (video.uploadProgress === undefined) onSelectVideo(video);
                 }}
               >
-                {/* Thumbnail */}
-                <div className="relative w-24 h-14 rounded-md overflow-hidden bg-muted flex-shrink-0">
-                  {video.thumbnail ? (
-                    <img
-                      src={video.thumbnail}
-                      alt={video.title}
-                      className="w-full h-full object-cover"
-                    />
+                {/* Video Icon */}
+                <div className="relative w-10 h-10 rounded-lg bg-sidebar-accent flex-shrink-0 flex items-center justify-center">
+                  {video.uploadProgress !== undefined ? (
+                    /* Uploading: circular progress indicator */
+                    <div className="relative w-8 h-8">
+                      <svg className="w-8 h-8 -rotate-90" viewBox="0 0 32 32">
+                        <circle
+                          cx="16" cy="16" r="13"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.5"
+                          className="text-muted-foreground/20"
+                        />
+                        <circle
+                          cx="16" cy="16" r="13"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.5"
+                          strokeDasharray={`${2 * Math.PI * 13}`}
+                          strokeDashoffset={`${2 * Math.PI * 13 * (1 - (video.uploadProgress || 0) / 100)}`}
+                          strokeLinecap="round"
+                          className="text-primary transition-all duration-300"
+                        />
+                      </svg>
+                      <Upload className="w-3.5 h-3.5 text-primary absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
+                    </div>
+                  ) : currentVideoId === video.id ? (
+                    /* Currently playing */
+                    <Play className="w-5 h-5 text-primary" fill="currentColor" />
                   ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <Film className="w-6 h-6 text-muted-foreground/50" />
-                    </div>
-                  )}
-                  {/* Play overlay */}
-                  {currentVideoId === video.id && video.uploadProgress === undefined && (
-                    <div className="absolute inset-0 bg-primary/30 flex items-center justify-center">
-                      <Play className="w-5 h-5 text-primary-foreground" fill="currentColor" />
-                    </div>
-                  )}
-                  {/* Upload progress overlay on thumbnail */}
-                  {video.uploadProgress !== undefined && (
-                    <div className="absolute inset-0 bg-black/50 flex items-center justify-center">
-                      <span className="text-xs text-white font-semibold">
-                        {video.uploadProgress}%
-                      </span>
-                    </div>
-                  )}
-                  {/* Duration badge */}
-                  {video.uploadProgress === undefined && (
-                    <div className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-black/70 text-xs text-foreground font-mono">
-                      {video.duration}
-                    </div>
+                    /* Normal video */
+                    <Film className="w-5 h-5 text-muted-foreground" />
                   )}
                 </div>
 
                 {/* Info */}
                 <div className="flex-1 min-w-0 flex flex-col justify-center">
-                  <span className="text-xs text-muted-foreground mb-0.5">
-                    #{index + 1}
-                  </span>
                   <h3 className="text-sm font-medium text-sidebar-foreground truncate">
                     {video.title}
                   </h3>
-                  {/* Upload progress bar */}
-                  {video.uploadProgress !== undefined && (
-                    <div className="mt-1.5 w-full">
+                  {video.uploadProgress !== undefined ? (
+                    /* Upload progress */
+                    <div className="mt-1 w-full">
                       <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden">
                         <div
                           className="h-full bg-primary rounded-full transition-all duration-300 ease-out"
@@ -193,6 +195,11 @@ export function PlaylistSidebar({
                         上传中 {video.uploadProgress}%
                       </span>
                     </div>
+                  ) : (
+                    /* Duration & index */
+                    <span className="text-xs text-muted-foreground mt-0.5">
+                      {video.duration !== "--:--" ? video.duration : ""}{video.duration !== "--:--" ? " · " : ""}#{index + 1}
+                    </span>
                   )}
                 </div>
 

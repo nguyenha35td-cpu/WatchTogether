@@ -300,10 +300,10 @@ export default function WatchTogetherPage() {
     [currentVideo, ws]
   );
 
-  const handleUploadVideo = useCallback(
+  const uploadSingleVideo = useCallback(
     async (file: File) => {
       // Show a temporary entry with upload progress
-      const tempId = Date.now().toString();
+      const tempId = Date.now().toString() + Math.random().toString(36).slice(2, 6);
       const tempVideo: VideoItem = {
         id: tempId,
         title: file.name.replace(/\.[^/.]+$/, ""),
@@ -399,10 +399,18 @@ export default function WatchTogetherPage() {
         console.error("Upload failed:", err);
         // Remove the temp entry on failure
         setVideos((prev) => prev.filter((v) => v.id !== tempId));
-        alert(err instanceof Error ? err.message : "视频上传失败，请重试");
+        alert(`${file.name}: ${err instanceof Error ? err.message : "上传失败，请重试"}`);
       }
     },
     [ws]
+  );
+
+  const handleUploadVideos = useCallback(
+    (files: File[]) => {
+      // Upload each file independently in parallel
+      files.forEach((file) => uploadSingleVideo(file));
+    },
+    [uploadSingleVideo]
   );
 
   // ==================== Sync Actions ====================
@@ -473,7 +481,7 @@ export default function WatchTogetherPage() {
             currentVideoId={currentVideo?.id ?? null}
             onSelectVideo={handleSelectVideo}
             onDeleteVideo={handleDeleteVideo}
-            onUploadVideo={handleUploadVideo}
+            onUploadVideos={handleUploadVideos}
             isOpen={isSidebarOpen}
           />
         </div>
@@ -598,7 +606,7 @@ export default function WatchTogetherPage() {
             setIsSidebarOpen(false);
           }}
           onDeleteVideo={handleDeleteVideo}
-          onUploadVideo={handleUploadVideo}
+          onUploadVideos={handleUploadVideos}
           isOpen={true}
         />
       </div>
