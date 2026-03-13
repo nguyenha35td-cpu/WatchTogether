@@ -27,6 +27,92 @@ app.use("/uploads", express.static(uploadsDir, {
   },
 }));
 
+// ==================== File Cleanup ====================
+
+// Delete a single uploaded file safely
+function deleteUploadFile(filename) {
+  const filePath = path.join(uploadsDir, filename);
+  fs.unlink(filePath, (err) => {
+    if (err && err.code !== "ENOENT") {
+      console.error(`[Cleanup] Failed to delete ${filename}:`, err.message);
+    } else if (!err) {
+      console.log(`[Cleanup] Deleted file: ${filename}`);
+    }
+  });
+}
+
+// Extract filename from a video URL like "/uploads/1234-5678.mp4"
+function extractFilename(videoSrc) {
+  if (!videoSrc) return null;
+  const match = videoSrc.match(/\/uploads\/([^/?#]+)/);
+  return match ? match[1] : null;
+}
+
+// Delete all uploaded files associated with a room's playlist
+function cleanupRoomFiles(room) {
+  if (!room || !room.playlist) return;
+  let count = 0;
+  for (const video of room.playlist) {
+    const filename = extractFilename(video.src);
+    if (filename) {
+      deleteUploadFile(filename);
+      count++;
+    }
+  }
+  if (count > 0) {
+    console.log(`[Cleanup] Cleaned ${count} file(s) for room ${room.id}`);
+  }
+}
+
+// Periodic cleanup: delete files older than 24 hours
+const FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+const CLEANUP_INTERVAL_MS = 60 * 60 * 1000; // run every 1 hour
+
+function periodicCleanup() {
+  fs.readdir(uploadsDir, (err, files) => {
+    if (err) {
+      console.error("[Cleanup] Failed to read uploads dir:", err.message);
+      return;
+    }
+    const now = Date.now();
+    let deleted = 0;
+
+    // Collect all filenames currently referenced by active rooms
+    const activeFiles = new Set();
+    rooms.forEach((room) => {
+      for (const video of room.playlist) {
+        const filename = extractFilename(video.src);
+        if (filename) activeFiles.add(filename);
+      }
+    });
+
+    for (const file of files) {
+      // Skip files still in use by active rooms
+      if (activeFiles.has(file)) continue;
+
+      const filePath = path.join(uploadsDir, file);
+      try {
+        const stat = fs.statSync(filePath);
+        if (now - stat.mtimeMs > FILE_MAX_AGE_MS) {
+          fs.unlinkSync(filePath);
+          deleted++;
+          console.log(`[Cleanup] Expired file deleted: ${file}`);
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+    if (deleted > 0) {
+      console.log(`[Cleanup] Periodic cleanup removed ${deleted} expired file(s)`);
+    }
+  });
+}
+
+// Start periodic cleanup timer
+setInterval(periodicCleanup, CLEANUP_INTERVAL_MS);
+// Also run once on startup to clean leftovers from previous runs
+setTimeout(periodicCleanup, 5000);
+
 // Configure multer for video uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -310,6 +396,12 @@ wss.on("connection", (ws) => {
         if (!room2) return;
 
         const { videoId } = payload;
+        // Find the video to delete its file
+        const removedVideo = room2.playlist.find((v) => v.id === videoId);
+        if (removedVideo) {
+          const filename = extractFilename(removedVideo.src);
+          if (filename) deleteUploadFile(filename);
+        }
         room2.playlist = room2.playlist.filter((v) => v.id !== videoId);
 
         if (room2.currentVideoId === videoId) {
@@ -451,7 +543,8 @@ wss.on("connection", (ws) => {
     room.participants.delete(clientId);
 
     if (room.participants.size === 0) {
-      // Room is empty, clean it up
+      // Room is empty, clean up uploaded files and remove room
+      cleanupRoomFiles(room);
       rooms.delete(currentRoomId);
       console.log(`[Room] Deleted empty room: ${currentRoomId}`);
     } else {
