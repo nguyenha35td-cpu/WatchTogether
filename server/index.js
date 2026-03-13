@@ -9,18 +9,56 @@ const fs = require("fs");
 const { execFile } = require("child_process");
 
 // Get ffmpeg/ffprobe binary paths from npm packages (works on any platform)
-let ffmpegPath, ffprobePath;
+let ffmpegPath = "ffmpeg";
+let ffprobePath = "ffprobe";
+const ffmpegErrors = [];
+
+// Strategy 1: @ffmpeg-installer packages
 try {
   ffmpegPath = require("@ffmpeg-installer/ffmpeg").path;
-  ffprobePath = require("@ffprobe-installer/ffprobe").path;
-  console.log("[FFmpeg] Using npm-installed binaries:");
-  console.log("  ffmpeg:", ffmpegPath);
-  console.log("  ffprobe:", ffprobePath);
+  console.log("[FFmpeg] @ffmpeg-installer/ffmpeg path:", ffmpegPath);
 } catch (e) {
-  // Fallback to system PATH
+  ffmpegErrors.push("@ffmpeg-installer/ffmpeg: " + e.message);
+}
+try {
+  ffprobePath = require("@ffprobe-installer/ffprobe").path;
+  console.log("[FFmpeg] @ffprobe-installer/ffprobe path:", ffprobePath);
+} catch (e) {
+  ffmpegErrors.push("@ffprobe-installer/ffprobe: " + e.message);
+}
+
+// Strategy 2: ffmpeg-static / ffprobe-static (fallback)
+if (ffmpegPath === "ffmpeg") {
+  try {
+    ffmpegPath = require("ffmpeg-static");
+    console.log("[FFmpeg] ffmpeg-static path:", ffmpegPath);
+  } catch (e) {
+    ffmpegErrors.push("ffmpeg-static: " + e.message);
+  }
+}
+if (ffprobePath === "ffprobe") {
+  try {
+    const ffprobeStatic = require("ffprobe-static");
+    ffprobePath = ffprobeStatic.path || ffprobeStatic;
+    console.log("[FFmpeg] ffprobe-static path:", ffprobePath);
+  } catch (e) {
+    ffmpegErrors.push("ffprobe-static: " + e.message);
+  }
+}
+
+// Strategy 3: Check if binary files actually exist
+if (ffmpegPath !== "ffmpeg" && !fs.existsSync(ffmpegPath)) {
+  ffmpegErrors.push("ffmpeg binary not found at: " + ffmpegPath);
   ffmpegPath = "ffmpeg";
+}
+if (ffprobePath !== "ffprobe" && !fs.existsSync(ffprobePath)) {
+  ffmpegErrors.push("ffprobe binary not found at: " + ffprobePath);
   ffprobePath = "ffprobe";
-  console.log("[FFmpeg] npm packages not found, falling back to system PATH");
+}
+
+console.log("[FFmpeg] Final paths - ffmpeg:", ffmpegPath, "ffprobe:", ffprobePath);
+if (ffmpegErrors.length > 0) {
+  console.log("[FFmpeg] Errors encountered:", ffmpegErrors);
 }
 
 const app = express();
@@ -401,7 +439,22 @@ app.get("/health", (req, res) => {
 
 // Debug: check ffprobe availability and list uploaded files
 app.get("/api/debug/ffprobe", async (req, res) => {
-  const result = { ffprobeAvailable: false, ffmpegAvailable: false, ffprobePath, ffmpegPath, uploads: [], subtitles: [] };
+  const result = {
+    ffprobeAvailable: false,
+    ffmpegAvailable: false,
+    ffprobePath,
+    ffmpegPath,
+    npmErrors: ffmpegErrors,
+    nodeModulesExists: fs.existsSync(path.join(__dirname, "node_modules")),
+    ffmpegInstallerExists: fs.existsSync(path.join(__dirname, "node_modules", "@ffmpeg-installer")),
+    ffprobeInstallerExists: fs.existsSync(path.join(__dirname, "node_modules", "@ffprobe-installer")),
+    ffmpegStaticExists: fs.existsSync(path.join(__dirname, "node_modules", "ffmpeg-static")),
+    ffprobeStaticExists: fs.existsSync(path.join(__dirname, "node_modules", "ffprobe-static")),
+    cwd: process.cwd(),
+    dirname: __dirname,
+    uploads: [],
+    subtitles: [],
+  };
 
   // Check ffprobe
   try {
