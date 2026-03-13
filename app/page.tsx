@@ -313,23 +313,28 @@ export default function WatchTogetherPage() {
       setVideos((prev) => [...prev, tempVideo]);
 
       try {
-        const apiBase = process.env.NEXT_PUBLIC_API_URL || "";
+        // Upload directly to backend (bypasses Vercel's 4.5MB body limit)
+        const backendUrl =
+          process.env.NEXT_PUBLIC_API_URL ||
+          "https://watchtogether-production-b75c.up.railway.app";
         const formData = new FormData();
         formData.append("video", file);
 
-        const resp = await fetch(`${apiBase}/api/upload`, {
+        const resp = await fetch(`${backendUrl}/api/upload`, {
           method: "POST",
           body: formData,
         });
 
         if (!resp.ok) {
-          const errData = await resp.json().catch(() => ({ error: "上传失败" }));
-          throw new Error(errData.error || "上传失败");
+          const errData = await resp.json().catch(() => ({}));
+          throw new Error(
+            errData.error || `上传失败 (HTTP ${resp.status})`
+          );
         }
 
         const data = await resp.json();
-        // Use relative URL so it works on any deployment host
-        const videoUrl = `${apiBase}${data.url}`;
+        // Use full backend URL for video playback
+        const videoUrl = `${backendUrl}${data.url}`;
 
         const newVideo: VideoItem = {
           id: tempId,
