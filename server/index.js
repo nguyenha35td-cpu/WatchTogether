@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require("uuid");
 const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
+const { execFile } = require("child_process");
 
 const app = express();
 app.use(cors());
@@ -29,7 +30,7 @@ app.use("/uploads", express.static(uploadsDir, {
 
 // ==================== File Cleanup ====================
 
-// Delete a single uploaded file safely
+// Delete a single uploaded file and its associated subtitle cache files
 function deleteUploadFile(filename) {
   const filePath = path.join(uploadsDir, filename);
   fs.unlink(filePath, (err) => {
@@ -37,6 +38,19 @@ function deleteUploadFile(filename) {
       console.error(`[Cleanup] Failed to delete ${filename}:`, err.message);
     } else if (!err) {
       console.log(`[Cleanup] Deleted file: ${filename}`);
+    }
+  });
+
+  // Also clean up any extracted subtitle VTT files for this video
+  const baseName = path.parse(filename).name;
+  fs.readdir(subtitlesDir, (err, files) => {
+    if (err) return;
+    for (const f of files) {
+      if (f.startsWith(baseName + "_sub")) {
+        const subPath = path.join(subtitlesDir, f);
+        fs.unlink(subPath, () => {});
+        console.log(`[Cleanup] Deleted subtitle cache: ${f}`);
+      }
     }
   });
 }
@@ -156,6 +170,128 @@ app.post("/api/upload", upload.single("video"), (req, res) => {
     filename: req.file.originalname,
     size: req.file.size,
   });
+});
+
+// ==================== Subtitle APIs ====================
+
+// Ensure subtitles directory exists
+const subtitlesDir = path.join(__dirname, "subtitles");
+if (!fs.existsSync(subtitlesDir)) {
+  fs.mkdirSync(subtitlesDir, { recursive: true });
+}
+
+// Serve subtitle files as static assets
+app.use("/subtitles", express.static(subtitlesDir, {
+  setHeaders: (res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Content-Type", "text/vtt; charset=utf-8");
+  },
+}));
+
+// Helper: run ffprobe to get subtitle track info from a video file
+function probeSubtitles(filePath) {
+  return new Promise((resolve, reject) => {
+    execFile("ffprobe", [
+      "-v", "quiet",
+      "-print_format", "json",
+      "-show_streams",
+      "-select_streams", "s",  // only subtitle streams
+      filePath,
+    ], { timeout: 30000 }, (err, stdout, stderr) => {
+      if (err) {
+        // ffprobe not available or file has no subtitle streams
+        console.error("[Subtitle] ffprobe error:", err.message);
+        return resolve([]);
+      }
+      try {
+        const data = JSON.parse(stdout);
+        const streams = (data.streams || []).map((s, idx) => ({
+          index: s.index,
+          streamIndex: idx,
+          codec: s.codec_name,               // e.g. "ass", "srt", "subrip", "hdmv_pgs_subtitle"
+          language: s.tags?.language || "",    // e.g. "chi", "eng", "jpn"
+          title: s.tags?.title || "",          // e.g. "简体中文", "English"
+        }));
+        resolve(streams);
+      } catch (parseErr) {
+        console.error("[Subtitle] ffprobe parse error:", parseErr.message);
+        resolve([]);
+      }
+    });
+  });
+}
+
+// Helper: extract a subtitle stream to WebVTT format using ffmpeg
+function extractSubtitleToVTT(videoPath, streamIndex, outputPath) {
+  return new Promise((resolve, reject) => {
+    execFile("ffmpeg", [
+      "-y",
+      "-i", videoPath,
+      "-map", `0:s:${streamIndex}`,  // select the Nth subtitle stream
+      "-c:s", "webvtt",
+      outputPath,
+    ], { timeout: 60000 }, (err, stdout, stderr) => {
+      if (err) {
+        console.error("[Subtitle] ffmpeg extract error:", err.message);
+        return reject(new Error("字幕提取失败"));
+      }
+      resolve(outputPath);
+    });
+  });
+}
+
+// GET /api/subtitles/:filename - List all subtitle tracks in a video
+app.get("/api/subtitles/:filename", async (req, res) => {
+  const filename = req.params.filename;
+  const filePath = path.join(uploadsDir, filename);
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: "视频文件不存在" });
+  }
+
+  try {
+    const tracks = await probeSubtitles(filePath);
+
+    // Filter out image-based subtitle formats (PGS, DVB, etc.) that can't convert to VTT
+    const textTracks = tracks.filter((t) =>
+      !["hdmv_pgs_subtitle", "dvb_subtitle", "dvd_subtitle", "pgssub"].includes(t.codec)
+    );
+
+    res.json({ tracks: textTracks });
+  } catch (err) {
+    console.error("[Subtitle] Error probing:", err);
+    res.status(500).json({ error: "字幕探测失败" });
+  }
+});
+
+// GET /api/subtitles/:filename/:streamIndex - Extract & serve a specific subtitle track as VTT
+app.get("/api/subtitles/:filename/:streamIndex", async (req, res) => {
+  const { filename, streamIndex } = req.params;
+  const idx = parseInt(streamIndex, 10);
+
+  if (isNaN(idx) || idx < 0) {
+    return res.status(400).json({ error: "无效的字幕轨索引" });
+  }
+
+  const videoPath = path.join(uploadsDir, filename);
+  if (!fs.existsSync(videoPath)) {
+    return res.status(404).json({ error: "视频文件不存在" });
+  }
+
+  // Cache: check if VTT already extracted
+  const vttFilename = `${path.parse(filename).name}_sub${idx}.vtt`;
+  const vttPath = path.join(subtitlesDir, vttFilename);
+
+  if (fs.existsSync(vttPath)) {
+    return res.json({ url: `/subtitles/${vttFilename}` });
+  }
+
+  try {
+    await extractSubtitleToVTT(videoPath, idx, vttPath);
+    res.json({ url: `/subtitles/${vttFilename}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "字幕提取失败" });
+  }
 });
 
 // Error handler for multer

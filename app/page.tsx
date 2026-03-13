@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Header } from "@/components/header";
-import { PlaylistSidebar, VideoItem } from "@/components/playlist-sidebar";
+import { PlaylistSidebar, VideoItem, SubtitleTrack } from "@/components/playlist-sidebar";
 import { VideoPlayer, VideoPlayerHandle } from "@/components/video-player";
 import { RoomJoin } from "@/components/room-join";
 import { Film, MonitorPlay, Users, Zap } from "lucide-react";
@@ -35,6 +35,7 @@ export default function WatchTogetherPage() {
   const [currentVideo, setCurrentVideo] = useState<VideoItem | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSynced, setIsSynced] = useState(true);
+  const [activeSubtitleUrl, setActiveSubtitleUrl] = useState<string | null>(null);
   const playerRef = useRef<VideoPlayerHandle>(null);
 
   // Track pending room action for when WebSocket connects
@@ -281,6 +282,7 @@ export default function WatchTogetherPage() {
   const handleSelectVideo = useCallback(
     (video: VideoItem) => {
       setCurrentVideo(video);
+      setActiveSubtitleUrl(null); // Reset subtitle when changing video
       setIsSynced(false);
       ws.selectVideo(video.id);
       // Optimistically restore sync status
@@ -300,6 +302,83 @@ export default function WatchTogetherPage() {
     [currentVideo, ws]
   );
 
+  // ==================== Subtitle Helpers ====================
+
+  const backendUrl =
+    process.env.NEXT_PUBLIC_API_URL ||
+    "https://watchtogether-production-b75c.up.railway.app";
+
+  // Extract filename from video URL like "https://...railway.app/uploads/1234-5678.mkv"
+  const extractFilenameFromUrl = useCallback((videoSrc: string): string | null => {
+    const match = videoSrc.match(/\/uploads\/([^/?#]+)/);
+    return match ? match[1] : null;
+  }, []);
+
+  // Probe subtitle tracks for a video file via backend API
+  const probeSubtitleTracks = useCallback(async (videoSrc: string): Promise<SubtitleTrack[]> => {
+    const filename = extractFilenameFromUrl(videoSrc);
+    if (!filename) return [];
+
+    try {
+      const res = await fetch(`${backendUrl}/api/subtitles/${encodeURIComponent(filename)}`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.tracks || [];
+    } catch (err) {
+      console.error("Failed to probe subtitles:", err);
+      return [];
+    }
+  }, [backendUrl, extractFilenameFromUrl]);
+
+  // Extract a specific subtitle track VTT
+  const extractSubtitleVTT = useCallback(async (videoSrc: string, streamIndex: number): Promise<string | null> => {
+    const filename = extractFilenameFromUrl(videoSrc);
+    if (!filename) return null;
+
+    try {
+      const res = await fetch(`${backendUrl}/api/subtitles/${encodeURIComponent(filename)}/${streamIndex}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data.url ? `${backendUrl}${data.url}` : null;
+    } catch (err) {
+      console.error("Failed to extract subtitle:", err);
+      return null;
+    }
+  }, [backendUrl, extractFilenameFromUrl]);
+
+  // Handle subtitle track selection
+  const handleSelectSubtitle = useCallback(async (track: SubtitleTrack | null) => {
+    if (!track) {
+      setActiveSubtitleUrl(null);
+      return;
+    }
+
+    // If VTT URL already cached, use it directly
+    if (track.vttUrl) {
+      setActiveSubtitleUrl(track.vttUrl);
+      return;
+    }
+
+    // Extract the VTT on demand
+    if (!currentVideo?.src) return;
+    const vttUrl = await extractSubtitleVTT(currentVideo.src, track.streamIndex);
+    if (vttUrl) {
+      // Update the track's vttUrl in state
+      setVideos(prev => prev.map(v => {
+        if (v.id !== currentVideo.id) return v;
+        return {
+          ...v,
+          subtitleTracks: v.subtitleTracks?.map(t =>
+            t.streamIndex === track.streamIndex ? { ...t, vttUrl } : t
+          ),
+        };
+      }));
+      setActiveSubtitleUrl(vttUrl);
+    }
+  }, [currentVideo, extractSubtitleVTT]);
+
+  // ==================== Video Upload ====================
+
   const uploadSingleVideo = useCallback(
     async (file: File) => {
       // Show a temporary entry with upload progress
@@ -313,10 +392,6 @@ export default function WatchTogetherPage() {
         uploadProgress: 0,
       };
       setVideos((prev) => [...prev, tempVideo]);
-
-      const backendUrl =
-        process.env.NEXT_PUBLIC_API_URL ||
-        "https://watchtogether-production-b75c.up.railway.app";
 
       const formData = new FormData();
       formData.append("video", file);
@@ -391,6 +466,17 @@ export default function WatchTogetherPage() {
           src: videoUrl,
         };
 
+        // Probe subtitle tracks in the background (don't block)
+        probeSubtitleTracks(videoUrl).then((tracks) => {
+          if (tracks.length > 0) {
+            setVideos((prev) =>
+              prev.map((v) =>
+                v.id === tempId ? { ...v, subtitleTracks: tracks } : v
+              )
+            );
+          }
+        });
+
         setVideos((prev) =>
           prev.map((v) => (v.id === tempId ? newVideo : v))
         );
@@ -402,7 +488,7 @@ export default function WatchTogetherPage() {
         alert(`${file.name}: ${err instanceof Error ? err.message : "上传失败，请重试"}`);
       }
     },
-    [ws]
+    [ws, probeSubtitleTracks]
   );
 
   const handleUploadVideos = useCallback(
@@ -501,6 +587,9 @@ export default function WatchTogetherPage() {
                   onPlay={handlePlayerPlay}
                   onPause={handlePlayerPause}
                   onSeek={handlePlayerSeek}
+                  subtitleTracks={currentVideo.subtitleTracks || []}
+                  activeSubtitleUrl={activeSubtitleUrl}
+                  onSelectSubtitle={handleSelectSubtitle}
                 />
 
                 {/* Video Info */}

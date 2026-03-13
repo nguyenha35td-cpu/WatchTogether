@@ -6,6 +6,15 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
+export interface SubtitleTrack {
+  index: number;        // ffprobe stream index
+  streamIndex: number;  // subtitle stream order (0, 1, 2...)
+  codec: string;        // "ass", "srt", "subrip", etc.
+  language: string;     // "chi", "eng", "jpn", etc.
+  title: string;        // "简体中文", "English", etc.
+  vttUrl?: string;      // extracted VTT URL (filled after user selects)
+}
+
 export interface VideoItem {
   id: string;
   title: string;
@@ -14,6 +23,8 @@ export interface VideoItem {
   src: string;
   /** Upload progress 0-100, undefined means not uploading */
   uploadProgress?: number;
+  /** Available subtitle tracks from embedded MKV subtitles */
+  subtitleTracks?: SubtitleTrack[];
 }
 
 // Accepted video file extensions
