@@ -361,7 +361,7 @@ export default function WatchTogetherPage() {
 
         const tcVod = new TcVod({
           getSignature: async () => {
-            const res = await fetch("/api/upload/vod-signature");
+            const res = await fetch(`${getApiBase()}/api/upload/vod-signature`);
             if (!res.ok) throw new Error("获取上传签名失败");
             const data = await res.json();
             return data.signature;
