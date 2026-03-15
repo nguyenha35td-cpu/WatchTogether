@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState, useEffect, useCallback, forwardRef, useImperativeHandle } from "react";
+import Hls from "hls.js";
 import {
   Play,
   Pause,
@@ -10,34 +11,9 @@ import {
   Minimize,
   SkipBack,
   SkipForward,
-  Subtitles,
-  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Slider } from "@/components/ui/slider";
-import type { SubtitleTrack } from "@/components/playlist-sidebar";
-
-// Common language code to display name mapping
-function getLanguageLabel(langCode: string): string {
-  const map: Record<string, string> = {
-    chi: "中文", zho: "中文", zh: "中文",
-    chs: "简体中文", cht: "繁体中文",
-    eng: "English", en: "English",
-    jpn: "日本語", ja: "日本語",
-    kor: "한국어", ko: "한국어",
-    spa: "Español", es: "Español",
-    fre: "Français", fra: "Français", fr: "Français",
-    ger: "Deutsch", deu: "Deutsch", de: "Deutsch",
-    rus: "Русский", ru: "Русский",
-    por: "Português", pt: "Português",
-    ita: "Italiano", it: "Italiano",
-    ara: "العربية", ar: "العربية",
-    tha: "ไทย", th: "ไทย",
-    vie: "Tiếng Việt", vi: "Tiếng Việt",
-    und: "未知语言",
-  };
-  return map[langCode.toLowerCase()] || langCode;
-}
 
 export interface VideoPlayerHandle {
   play: () => void;
@@ -54,9 +30,6 @@ interface VideoPlayerProps {
   onPause?: () => void;
   onSeek?: (time: number) => void;
   isSynced?: boolean;
-  subtitleTracks?: SubtitleTrack[];
-  activeSubtitleUrl?: string | null;
-  onSelectSubtitle?: (track: SubtitleTrack | null) => void;
 }
 
 export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
@@ -69,14 +42,12 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       onPause,
       onSeek,
       isSynced = false,
-      subtitleTracks = [],
-      activeSubtitleUrl,
-      onSelectSubtitle,
     },
     ref
   ) {
     const videoRef = useRef<HTMLVideoElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
+    const hlsRef = useRef<Hls | null>(null);
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
     const [duration, setDuration] = useState(0);
@@ -85,7 +56,6 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [showControls, setShowControls] = useState(true);
     const [isBuffering, setIsBuffering] = useState(false);
-    const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
     const hideControlsTimeout = useRef<NodeJS.Timeout>();
     // Flag to suppress sync events when a remote command triggers local playback changes
     const isSyncActionRef = useRef(false);
@@ -98,7 +68,6 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           if (videoRef.current) {
             isSyncActionRef.current = true;
             videoRef.current.play().finally(() => {
-              // Reset after a tick to allow the onPlay event to be suppressed
               setTimeout(() => { isSyncActionRef.current = false; }, 50);
             });
           }
@@ -150,7 +119,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
     const handleVideoPause = useCallback(() => {
       setIsPlaying(false);
-      setIsBuffering(false); // Clear buffering on pause so we show pause icon, not spinner
+      setIsBuffering(false);
       if (!isSyncActionRef.current) {
         onPause?.();
       }
@@ -236,7 +205,6 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
     useEffect(() => {
       const handleKeyDown = (e: KeyboardEvent) => {
-        // Don't capture keyboard events when user is typing in an input
         if (
           e.target instanceof HTMLInputElement ||
           e.target instanceof HTMLTextAreaElement
@@ -261,29 +229,77 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       return () => window.removeEventListener("keydown", handleKeyDown);
     }, [handlePlayPause, isMuted]);
 
-    // Reset state when src changes
+    // ==================== HLS.js Integration ====================
+    // When src changes, set up HLS.js for .m3u8 or fallback to native
     useEffect(() => {
       setIsPlaying(false);
       setCurrentTime(0);
       setDuration(0);
-      setShowSubtitleMenu(false);
-    }, [src]);
 
-    // Activate/deactivate subtitle track when activeSubtitleUrl changes
-    useEffect(() => {
       const video = videoRef.current;
-      if (!video) return;
+      if (!video || !src) return;
 
-      // Need a short delay for the track element to be added to the DOM
-      const timer = setTimeout(() => {
-        const tracks = video.textTracks;
-        for (let i = 0; i < tracks.length; i++) {
-          tracks[i].mode = activeSubtitleUrl ? "showing" : "hidden";
+      // Clean up previous HLS instance
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+
+      const isHls = src.endsWith(".m3u8") || src.includes(".m3u8");
+
+      if (isHls) {
+        if (Hls.isSupported()) {
+          // Use hls.js for non-Safari browsers
+          const hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: false,
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+          });
+          hlsRef.current = hls;
+
+          hls.loadSource(src);
+          hls.attachMedia(video);
+
+          hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            console.log("[HLS] Manifest parsed, levels:", hls.levels.length);
+          });
+
+          hls.on(Hls.Events.ERROR, (_event, data) => {
+            console.error("[HLS] Error:", data.type, data.details);
+            if (data.fatal) {
+              switch (data.type) {
+                case Hls.ErrorTypes.NETWORK_ERROR:
+                  console.log("[HLS] Fatal network error, attempting recovery...");
+                  hls.startLoad();
+                  break;
+                case Hls.ErrorTypes.MEDIA_ERROR:
+                  console.log("[HLS] Fatal media error, attempting recovery...");
+                  hls.recoverMediaError();
+                  break;
+                default:
+                  console.log("[HLS] Fatal error, destroying instance");
+                  hls.destroy();
+                  break;
+              }
+            }
+          });
+        } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+          // Safari native HLS support
+          video.src = src;
         }
-      }, 100);
+      } else {
+        // Non-HLS: set src directly (MP4, WebM, etc.)
+        video.src = src;
+      }
 
-      return () => clearTimeout(timer);
-    }, [activeSubtitleUrl]);
+      return () => {
+        if (hlsRef.current) {
+          hlsRef.current.destroy();
+          hlsRef.current = null;
+        }
+      };
+    }, [src]);
 
     return (
       <div
@@ -292,10 +308,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
         onMouseMove={handleMouseMove}
         onMouseLeave={() => isPlaying && setShowControls(false)}
       >
-        {/* Video Element */}
+        {/* Video Element — src managed by useEffect above */}
         <video
           ref={videoRef}
-          src={src}
           poster={poster}
           crossOrigin="anonymous"
           className="w-full h-full object-contain bg-black"
@@ -310,25 +325,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           onWaiting={() => setIsBuffering(true)}
           onPlaying={() => setIsBuffering(false)}
           onClick={handlePlayPause}
-        >
-          {activeSubtitleUrl && (
-            <track
-              key={activeSubtitleUrl}
-              kind="subtitles"
-              src={activeSubtitleUrl}
-              default
-            />
-          )}
-        </video>
+        />
 
-        {/* Buffering Indicator - only show during playback */}
+        {/* Buffering Indicator */}
         {isBuffering && isPlaying && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/30">
             <div className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full animate-spin" />
           </div>
         )}
 
-        {/* Center Play Button - always show when paused */}
+        {/* Center Play Button */}
         {!isPlaying && (
           <button
             onClick={handlePlayPause}
@@ -435,91 +441,6 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
             {/* Right Controls */}
             <div className="flex items-center gap-2">
-              {/* Subtitle Selector */}
-              {subtitleTracks.length > 0 && (
-                <div className="relative">
-                  <button
-                    onClick={() => setShowSubtitleMenu(!showSubtitleMenu)}
-                    className={cn(
-                      "w-10 h-10 rounded-full flex items-center justify-center transition-colors",
-                      activeSubtitleUrl
-                        ? "bg-primary/30 hover:bg-primary/40"
-                        : "bg-foreground/10 hover:bg-foreground/20"
-                    )}
-                    title="字幕"
-                  >
-                    <Subtitles className={cn(
-                      "w-5 h-5",
-                      activeSubtitleUrl ? "text-primary" : "text-foreground"
-                    )} />
-                  </button>
-
-                  {/* Subtitle Menu Popup */}
-                  {showSubtitleMenu && (
-                    <div className="absolute bottom-12 right-0 min-w-[200px] bg-black/90 backdrop-blur-md rounded-lg border border-white/10 shadow-xl overflow-hidden z-50">
-                      <div className="px-3 py-2 border-b border-white/10 flex items-center justify-between">
-                        <span className="text-sm font-medium text-white">字幕轨道</span>
-                        <button
-                          onClick={() => setShowSubtitleMenu(false)}
-                          className="w-6 h-6 rounded-full hover:bg-white/10 flex items-center justify-center"
-                        >
-                          <X className="w-3.5 h-3.5 text-white/60" />
-                        </button>
-                      </div>
-                      <div className="py-1">
-                        {/* Off option */}
-                        <button
-                          onClick={() => {
-                            onSelectSubtitle?.(null);
-                            setShowSubtitleMenu(false);
-                          }}
-                          className={cn(
-                            "w-full px-3 py-2 text-left text-sm hover:bg-white/10 transition-colors flex items-center gap-2",
-                            !activeSubtitleUrl ? "text-primary" : "text-white/80"
-                          )}
-                        >
-                          <div className={cn(
-                            "w-2 h-2 rounded-full flex-shrink-0",
-                            !activeSubtitleUrl ? "bg-primary" : "bg-transparent"
-                          )} />
-                          关闭字幕
-                        </button>
-
-                        {/* Subtitle tracks */}
-                        {subtitleTracks.map((track) => {
-                          const label = track.title || getLanguageLabel(track.language) || `字幕轨 ${track.streamIndex + 1}`;
-                          const isActive = activeSubtitleUrl === track.vttUrl && !!track.vttUrl;
-                          return (
-                            <button
-                              key={track.streamIndex}
-                              onClick={() => {
-                                onSelectSubtitle?.(track);
-                                setShowSubtitleMenu(false);
-                              }}
-                              className={cn(
-                                "w-full px-3 py-2 text-left text-sm hover:bg-white/10 transition-colors flex items-center gap-2",
-                                isActive ? "text-primary" : "text-white/80"
-                              )}
-                            >
-                              <div className={cn(
-                                "w-2 h-2 rounded-full flex-shrink-0",
-                                isActive ? "bg-primary" : "bg-transparent"
-                              )} />
-                              <span className="truncate">{label}</span>
-                              {track.language && (
-                                <span className="text-xs text-white/40 ml-auto flex-shrink-0">
-                                  {track.language.toUpperCase()}
-                                </span>
-                              )}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-
               <button
                 onClick={toggleFullscreen}
                 className="w-10 h-10 rounded-full bg-foreground/10 hover:bg-foreground/20 flex items-center justify-center transition-colors"

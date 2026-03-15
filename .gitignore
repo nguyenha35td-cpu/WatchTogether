@@ -6,5 +6,8 @@ __v0_jsx-dev-runtime.ts
 # Common ignores
 node_modules/
 .next/
+.env
 .env*.local
-.DS_Storeserver/uploads/
+.DS_Store
+server/uploads/
+server/.env
