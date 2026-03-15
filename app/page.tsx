@@ -294,11 +294,10 @@ export default function WatchTogetherPage() {
   }, [ws]);
 
   // ==================== Subtitle Helpers (moved before handleSelectVideo) ====================
-  const backendUrl =
-    process.env.NEXT_PUBLIC_API_URL ||
-    "https://watchtogether-production-b75c.up.railway.app";
+  // 前后端部署在同一台腾讯云 Lighthouse 服务器上，使用相对路径即可
+  const backendUrl = "";
 
-  // Extract filename from video URL like "https://...railway.app/uploads/1234-5678.mkv"
+  // Extract filename from video URL like "/uploads/1234-5678.mkv"
   const extractFilenameFromUrl = useCallback((videoSrc: string): string | null => {
     const match = videoSrc.match(/\/uploads\/([^/?#]+)/);
     return match ? match[1] : null;

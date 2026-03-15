@@ -1,9 +1,5 @@
 /** @type {import('next').NextConfig} */
 
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_API_URL ||
-  "https://watchtogether-production-b75c.up.railway.app";
-
 const nextConfig = {
   typescript: {
     ignoreBuildErrors: true,
@@ -11,18 +7,7 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
-  async rewrites() {
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${BACKEND_URL}/api/:path*`,
-      },
-      {
-        source: "/uploads/:path*",
-        destination: `${BACKEND_URL}/uploads/:path*`,
-      },
-    ];
-  },
+  // 前后端部署在同一台腾讯云 Lighthouse 服务器上，不再需要 rewrites 代理
 }
 
 export default nextConfig
