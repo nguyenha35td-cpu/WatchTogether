@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Header } from "@/components/header";
-import { PlaylistSidebar, VideoItem } from "@/components/playlist-sidebar";
+import { PlaylistSidebar, VideoItem, SubtitleTrack } from "@/components/playlist-sidebar";
 import { VideoPlayer, VideoPlayerHandle } from "@/components/video-player";
 import { RoomJoin } from "@/components/room-join";
 import { Film, MonitorPlay, Users, Zap } from "lucide-react";
@@ -56,6 +56,7 @@ export default function WatchTogetherPage() {
   const [currentVideo, setCurrentVideo] = useState<VideoItem | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSynced, setIsSynced] = useState(true);
+  const [activeSubtitleUrl, setActiveSubtitleUrl] = useState<string | null>(null);
   const playerRef = useRef<VideoPlayerHandle>(null);
 
   // Track pending room action for when WebSocket connects
@@ -138,13 +139,18 @@ export default function WatchTogetherPage() {
         const uploadingVideos = prev.filter(
           (v) => v.uploadProgress !== undefined
         );
-        const serverVideos = playlist.map((v) => ({
-          id: v.id,
-          title: v.title,
-          thumbnail: v.thumbnail,
-          duration: v.duration,
-          src: v.src,
-        }));
+        const serverVideos = playlist.map((v) => {
+          // Preserve locally-probed subtitleTracks if server doesn't carry them
+          const existing = prev.find((p) => p.id === v.id);
+          return {
+            id: v.id,
+            title: v.title,
+            thumbnail: v.thumbnail,
+            duration: v.duration,
+            src: v.src,
+            ...(existing?.subtitleTracks ? { subtitleTracks: existing.subtitleTracks } : {}),
+          };
+        });
         const uploadingNotInServer = uploadingVideos.filter(
           (u) => !serverVideos.some((s) => s.id === u.id)
         );
@@ -279,9 +285,28 @@ export default function WatchTogetherPage() {
 
   // ==================== VOD Video Selection ====================
 
+  // Probe subtitle tracks for a VOD file via backend API
+  const probeSubtitleTracks = useCallback(async (fileId: string): Promise<SubtitleTrack[]> => {
+    try {
+      const backendUrl = getApiBase();
+      const url = `${backendUrl}/api/subtitles/vod/${encodeURIComponent(fileId)}`;
+      console.log("[Subtitle] Probing:", url);
+      const res = await fetch(url);
+      if (!res.ok) return [];
+      const data = await res.json();
+      console.log("[Subtitle] Tracks received:", data.tracks);
+      return data.tracks || [];
+    } catch (err) {
+      console.error("[Subtitle] Failed to probe subtitles:", err);
+      return [];
+    }
+  }, []);
+
   // Helper: when selecting a VOD video (src = "vod://<fileId>"), resolve play URL
   const handleSelectVideoFromSync = useCallback(
     async (video: { id: string; title: string; thumbnail: string; duration: string; src: string }) => {
+      setActiveSubtitleUrl(null); // Reset subtitle when changing video
+
       if (video.src.startsWith("vod://")) {
         const fileId = video.src.replace("vod://", "");
         const playUrl = await fetchVodPlayUrl(fileId);
@@ -292,6 +317,18 @@ export default function WatchTogetherPage() {
           duration: video.duration,
           src: playUrl || video.src,
           vodFileId: fileId,
+        });
+
+        // Auto-probe subtitles for VOD files
+        probeSubtitleTracks(fileId).then((tracks) => {
+          if (tracks.length > 0) {
+            setVideos((prev) =>
+              prev.map((v) => v.id === video.id ? { ...v, subtitleTracks: tracks } : v)
+            );
+            setCurrentVideo((prev) =>
+              prev && prev.id === video.id ? { ...prev, subtitleTracks: tracks } : prev
+            );
+          }
         });
       } else {
         setCurrentVideo({
@@ -303,13 +340,14 @@ export default function WatchTogetherPage() {
         });
       }
     },
-    []
+    [probeSubtitleTracks]
   );
 
   // ==================== Video Actions ====================
   const handleSelectVideo = useCallback(
     async (video: VideoItem) => {
       setIsSynced(false);
+      setActiveSubtitleUrl(null); // Reset subtitle when changing video
       ws.selectVideo(video.id);
       setTimeout(() => setIsSynced(true), 500);
 
@@ -321,11 +359,25 @@ export default function WatchTogetherPage() {
           src: playUrl || video.src,
           vodFileId: fileId,
         });
+
+        // Auto-probe subtitles if not yet probed
+        if (!video.subtitleTracks) {
+          probeSubtitleTracks(fileId).then((tracks) => {
+            if (tracks.length > 0) {
+              setVideos((prev) =>
+                prev.map((v) => v.id === video.id ? { ...v, subtitleTracks: tracks } : v)
+              );
+              setCurrentVideo((prev) =>
+                prev && prev.id === video.id ? { ...prev, subtitleTracks: tracks } : prev
+              );
+            }
+          });
+        }
       } else {
         setCurrentVideo(video);
       }
     },
-    [ws]
+    [ws, probeSubtitleTracks]
   );
 
   const handleDeleteVideo = useCallback(
@@ -333,11 +385,74 @@ export default function WatchTogetherPage() {
       setVideos((prev) => prev.filter((v) => v.id !== id));
       if (currentVideo?.id === id) {
         setCurrentVideo(null);
+        setActiveSubtitleUrl(null);
       }
       ws.removeFromPlaylist(id);
     },
     [currentVideo, ws]
   );
+
+  // ==================== Subtitle Handling ====================
+
+  // When videos array is updated (e.g. subtitleTracks added), sync currentVideo
+  useEffect(() => {
+    if (!currentVideo) return;
+    const updated = videos.find((v) => v.id === currentVideo.id);
+    if (
+      updated?.subtitleTracks &&
+      updated.subtitleTracks !== currentVideo.subtitleTracks
+    ) {
+      setCurrentVideo((prev) =>
+        prev ? { ...prev, subtitleTracks: updated.subtitleTracks } : prev
+      );
+    }
+  }, [videos, currentVideo]);
+
+  // Extract a specific subtitle track VTT from backend
+  const extractSubtitleVTT = useCallback(async (fileId: string, streamIndex: number): Promise<string | null> => {
+    try {
+      const backendUrl = getApiBase();
+      const res = await fetch(`${backendUrl}/api/subtitles/vod/${encodeURIComponent(fileId)}/${streamIndex}`);
+      if (!res.ok) return null;
+      const data = await res.json();
+      // Return full URL to the VTT file
+      return data.url ? `${backendUrl}${data.url}` : null;
+    } catch (err) {
+      console.error("[Subtitle] Failed to extract subtitle:", err);
+      return null;
+    }
+  }, []);
+
+  // Handle subtitle track selection
+  const handleSelectSubtitle = useCallback(async (track: SubtitleTrack | null) => {
+    if (!track) {
+      setActiveSubtitleUrl(null);
+      return;
+    }
+
+    // If already extracted, use cached VTT URL
+    if (track.vttUrl) {
+      setActiveSubtitleUrl(track.vttUrl);
+      return;
+    }
+
+    // Need to extract this subtitle track
+    if (!currentVideo?.vodFileId) return;
+
+    const vttUrl = await extractSubtitleVTT(currentVideo.vodFileId, track.streamIndex);
+    if (vttUrl) {
+      // Update the track's vttUrl in state
+      setVideos((prev) =>
+        prev.map((v) => v.id === currentVideo.id ? {
+          ...v,
+          subtitleTracks: v.subtitleTracks?.map(t =>
+            t.streamIndex === track.streamIndex ? { ...t, vttUrl } : t
+          ),
+        } : v)
+      );
+      setActiveSubtitleUrl(vttUrl);
+    }
+  }, [currentVideo, extractSubtitleVTT]);
 
   // ==================== VOD Upload ====================
 
@@ -415,13 +530,22 @@ export default function WatchTogetherPage() {
           prev.map((v) => (v.id === tempId ? newVideo : v))
         );
         ws.addToPlaylist(newVideo);
+
+        // Probe subtitle tracks AFTER the video entry is finalized
+        probeSubtitleTracks(fileId).then((tracks) => {
+          if (tracks.length > 0) {
+            setVideos((prev) =>
+              prev.map((v) => v.id === tempId ? { ...v, subtitleTracks: tracks } : v)
+            );
+          }
+        });
       } catch (err) {
         console.error("[VOD] Upload failed:", err);
         setVideos((prev) => prev.filter((v) => v.id !== tempId));
         alert(`${file.name}: ${err instanceof Error ? err.message : "上传失败，请重试"}`);
       }
     },
-    [ws]
+    [ws, probeSubtitleTracks]
   );
 
   const handleUploadVideos = useCallback(
@@ -519,6 +643,9 @@ export default function WatchTogetherPage() {
                   onPlay={handlePlayerPlay}
                   onPause={handlePlayerPause}
                   onSeek={handlePlayerSeek}
+                  subtitleTracks={currentVideo.subtitleTracks || []}
+                  activeSubtitleUrl={activeSubtitleUrl}
+                  onSelectSubtitle={handleSelectSubtitle}
                 />
 
                 {/* Video Info */}

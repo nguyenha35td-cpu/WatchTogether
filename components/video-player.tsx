@@ -11,9 +11,34 @@ import {
   Minimize,
   SkipBack,
   SkipForward,
+  Subtitles,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Slider } from "@/components/ui/slider";
+import type { SubtitleTrack } from "@/components/playlist-sidebar";
+
+// Common language code to display name mapping
+function getLanguageLabel(langCode: string): string {
+  const map: Record<string, string> = {
+    chi: "中文", zho: "中文", zh: "中文",
+    chs: "简体中文", cht: "繁体中文",
+    eng: "English", en: "English",
+    jpn: "日本語", ja: "日本語",
+    kor: "한국어", ko: "한국어",
+    spa: "Español", es: "Español",
+    fre: "Français", fra: "Français", fr: "Français",
+    ger: "Deutsch", deu: "Deutsch", de: "Deutsch",
+    rus: "Русский", ru: "Русский",
+    por: "Português", pt: "Português",
+    ita: "Italiano", it: "Italiano",
+    ara: "العربية", ar: "العربية",
+    tha: "ไทย", th: "ไทย",
+    vie: "Tiếng Việt", vi: "Tiếng Việt",
+    und: "未知语言",
+  };
+  return map[langCode.toLowerCase()] || langCode;
+}
 
 export interface VideoPlayerHandle {
   play: () => void;
@@ -30,6 +55,9 @@ interface VideoPlayerProps {
   onPause?: () => void;
   onSeek?: (time: number) => void;
   isSynced?: boolean;
+  subtitleTracks?: SubtitleTrack[];
+  activeSubtitleUrl?: string | null;
+  onSelectSubtitle?: (track: SubtitleTrack | null) => void;
 }
 
 export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
@@ -42,6 +70,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       onPause,
       onSeek,
       isSynced = false,
+      subtitleTracks = [],
+      activeSubtitleUrl,
+      onSelectSubtitle,
     },
     ref
   ) {
@@ -56,6 +87,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     const [isFullscreen, setIsFullscreen] = useState(false);
     const [showControls, setShowControls] = useState(true);
     const [isBuffering, setIsBuffering] = useState(false);
+    const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
     const hideControlsTimeout = useRef<NodeJS.Timeout>();
     // Flag to suppress sync events when a remote command triggers local playback changes
     const isSyncActionRef = useRef(false);
@@ -301,6 +333,23 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
       };
     }, [src]);
 
+    // ==================== Subtitle Track Activation ====================
+    // When activeSubtitleUrl changes, activate/deactivate the text track
+    useEffect(() => {
+      const video = videoRef.current;
+      if (!video) return;
+
+      // Wait a tick for the <track> element to be added to the DOM
+      const timer = setTimeout(() => {
+        const tracks = video.textTracks;
+        for (let i = 0; i < tracks.length; i++) {
+          tracks[i].mode = activeSubtitleUrl ? "showing" : "hidden";
+        }
+      }, 100);
+
+      return () => clearTimeout(timer);
+    }, [activeSubtitleUrl]);
+
     return (
       <div
         ref={containerRef}
@@ -325,7 +374,16 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           onWaiting={() => setIsBuffering(true)}
           onPlaying={() => setIsBuffering(false)}
           onClick={handlePlayPause}
-        />
+        >
+          {activeSubtitleUrl && (
+            <track
+              key={activeSubtitleUrl}
+              kind="subtitles"
+              src={activeSubtitleUrl}
+              default
+            />
+          )}
+        </video>
 
         {/* Buffering Indicator */}
         {isBuffering && isPlaying && (
@@ -441,6 +499,86 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
             {/* Right Controls */}
             <div className="flex items-center gap-2">
+              {/* Subtitle Button & Menu */}
+              {subtitleTracks.length > 0 && (
+                <div className="relative">
+                  <button
+                    onClick={() => setShowSubtitleMenu(!showSubtitleMenu)}
+                    className={cn(
+                      "w-10 h-10 rounded-full flex items-center justify-center transition-colors",
+                      activeSubtitleUrl
+                        ? "bg-primary/20 text-primary hover:bg-primary/30"
+                        : "bg-foreground/10 hover:bg-foreground/20 text-foreground"
+                    )}
+                  >
+                    <Subtitles className="w-5 h-5" />
+                  </button>
+
+                  {showSubtitleMenu && (
+                    <div className="absolute bottom-12 right-0 w-56 bg-black/90 backdrop-blur-md rounded-lg border border-white/10 shadow-xl overflow-hidden z-50">
+                      {/* Header */}
+                      <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
+                        <span className="text-sm font-medium text-white">字幕轨道</span>
+                        <button
+                          onClick={() => setShowSubtitleMenu(false)}
+                          className="w-6 h-6 rounded-full hover:bg-white/10 flex items-center justify-center"
+                        >
+                          <X className="w-4 h-4 text-white/60" />
+                        </button>
+                      </div>
+
+                      {/* Off option */}
+                      <button
+                        onClick={() => {
+                          onSelectSubtitle?.(null);
+                          setShowSubtitleMenu(false);
+                        }}
+                        className={cn(
+                          "w-full px-3 py-2 text-left text-sm hover:bg-white/10 transition-colors flex items-center gap-2",
+                          !activeSubtitleUrl ? "text-primary" : "text-white/80"
+                        )}
+                      >
+                        <div className={cn(
+                          "w-2 h-2 rounded-full flex-shrink-0",
+                          !activeSubtitleUrl ? "bg-primary" : "bg-transparent"
+                        )} />
+                        关闭字幕
+                      </button>
+
+                      {/* Subtitle tracks */}
+                      {subtitleTracks.map((track) => {
+                        const label = track.title || getLanguageLabel(track.language) || `字幕轨 ${track.streamIndex + 1}`;
+                        const isActive = activeSubtitleUrl === track.vttUrl && !!track.vttUrl;
+                        return (
+                          <button
+                            key={track.streamIndex}
+                            onClick={() => {
+                              onSelectSubtitle?.(track);
+                              setShowSubtitleMenu(false);
+                            }}
+                            className={cn(
+                              "w-full px-3 py-2 text-left text-sm hover:bg-white/10 transition-colors flex items-center gap-2",
+                              isActive ? "text-primary" : "text-white/80"
+                            )}
+                          >
+                            <div className={cn(
+                              "w-2 h-2 rounded-full flex-shrink-0",
+                              isActive ? "bg-primary" : "bg-transparent"
+                            )} />
+                            <span className="truncate">{label}</span>
+                            {track.language && (
+                              <span className="text-xs text-white/40 ml-auto flex-shrink-0">
+                                {track.language.toUpperCase()}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
               <button
                 onClick={toggleFullscreen}
                 className="w-10 h-10 rounded-full bg-foreground/10 hover:bg-foreground/20 flex items-center justify-center transition-colors"

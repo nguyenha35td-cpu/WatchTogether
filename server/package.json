@@ -12,6 +12,8 @@
     "express": "^4.21.0",
     "tencentcloud-sdk-nodejs": "^4.0.0",
     "uuid": "^10.0.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2"
   }
 }

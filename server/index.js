@@ -4,6 +4,9 @@ const { WebSocketServer } = require("ws");
 const cors = require("cors");
 const { v4: uuidv4 } = require("uuid");
 const crypto = require("crypto");
+const { execFile } = require("child_process");
+const fs = require("fs");
+const path = require("path");
 
 // ==================== Tencent Cloud VOD Config ====================
 const TENCENT_SECRET_ID = process.env.TENCENT_SECRET_ID || "";
@@ -11,9 +14,32 @@ const TENCENT_SECRET_KEY = process.env.TENCENT_SECRET_KEY || "";
 const VOD_APP_ID = process.env.VOD_APP_ID || "";
 const VOD_REGION = process.env.VOD_REGION || "ap-guangzhou";
 
+// ==================== FFmpeg/FFprobe Paths ====================
+let ffmpegPath = "ffmpeg";
+let ffprobePath = "ffprobe";
+
+// Try npm packages first, fallback to system binaries
+try { ffmpegPath = require("@ffmpeg-installer/ffmpeg").path; } catch (e) {}
+try { ffprobePath = require("@ffprobe-installer/ffprobe").path; } catch (e) {}
+console.log("[FFmpeg] paths - ffmpeg:", ffmpegPath, "ffprobe:", ffprobePath);
+
+// ==================== Subtitle Cache ====================
+const subtitlesDir = path.join(__dirname, "subtitles");
+if (!fs.existsSync(subtitlesDir)) {
+  fs.mkdirSync(subtitlesDir, { recursive: true });
+}
+
 const app = express();
 app.use(cors());
 app.use(express.json());
+
+// Serve extracted subtitle VTT files
+app.use("/subtitles", express.static(subtitlesDir, {
+  setHeaders: (res) => {
+    res.set("Access-Control-Allow-Origin", "*");
+    res.set("Content-Type", "text/vtt; charset=utf-8");
+  },
+}));
 
 // ==================== VOD Upload Signature ====================
 
@@ -200,6 +226,179 @@ app.get("/api/debug/vod", (req, res) => {
     vodRegion: VOD_REGION,
     secretIdPrefix: TENCENT_SECRET_ID ? TENCENT_SECRET_ID.substring(0, 8) + "..." : "NOT SET",
   });
+});
+
+// ==================== Subtitle APIs ====================
+
+/**
+ * Helper: Create a VOD client instance
+ */
+function createVodClient() {
+  const tencentcloud = require("tencentcloud-sdk-nodejs");
+  const VodClient = tencentcloud.vod.v20180717.Client;
+  return new VodClient({
+    credential: {
+      secretId: TENCENT_SECRET_ID,
+      secretKey: TENCENT_SECRET_KEY,
+    },
+    region: VOD_REGION,
+    profile: { httpProfile: { endpoint: "vod.tencentcloudapi.com" } },
+  });
+}
+
+/**
+ * Helper: Use ffprobe to probe subtitle streams from a URL (original MKV on VOD CDN)
+ */
+function probeSubtitlesFromUrl(mediaUrl) {
+  return new Promise((resolve) => {
+    execFile(ffprobePath, [
+      "-v", "quiet",
+      "-print_format", "json",
+      "-show_streams",
+      "-select_streams", "s",   // only subtitle streams
+      mediaUrl,
+    ], { timeout: 30000 }, (err, stdout) => {
+      if (err) {
+        console.error("[Subtitle] ffprobe error:", err.message);
+        return resolve([]);
+      }
+      try {
+        const data = JSON.parse(stdout);
+        const streams = (data.streams || []).map((s, idx) => ({
+          index: s.index,
+          streamIndex: idx,
+          codec: s.codec_name,             // "ass", "srt", "subrip", "hdmv_pgs_subtitle"
+          language: s.tags?.language || "", // "chi", "eng", "jpn"
+          title: s.tags?.title || "",       // "简体中文", "English"
+        }));
+        resolve(streams);
+      } catch (parseErr) {
+        console.error("[Subtitle] ffprobe parse error:", parseErr.message);
+        resolve([]);
+      }
+    });
+  });
+}
+
+/**
+ * Helper: Extract a subtitle stream from a URL to WebVTT
+ */
+function extractSubtitleToVTT(mediaUrl, streamIndex, outputPath) {
+  return new Promise((resolve, reject) => {
+    execFile(ffmpegPath, [
+      "-y",
+      "-i", mediaUrl,
+      "-map", `0:s:${streamIndex}`,
+      "-c:s", "webvtt",
+      outputPath,
+    ], { timeout: 120000 }, (err) => {
+      if (err) {
+        console.error("[Subtitle] ffmpeg extract error:", err.message);
+        return reject(new Error("字幕提取失败"));
+      }
+      resolve(outputPath);
+    });
+  });
+}
+
+/**
+ * GET /api/subtitles/vod/:fileId — Probe subtitle tracks from a VOD file
+ *
+ * First tries VOD MetaData.SubtitleStreamSet; if not available,
+ * downloads original file URL and uses ffprobe to detect subtitle tracks.
+ */
+app.get("/api/subtitles/vod/:fileId", async (req, res) => {
+  const { fileId } = req.params;
+  try {
+    const client = createVodClient();
+    const result = await client.DescribeMediaInfos({
+      FileIds: [fileId],
+      SubAppId: Number(VOD_APP_ID),
+      Filters: ["basicInfo", "metaData"],
+    });
+
+    const media = result.MediaInfoSet?.[0];
+    if (!media) {
+      return res.status(404).json({ error: "视频不存在" });
+    }
+
+    const mediaUrl = media.BasicInfo?.MediaUrl;
+    if (!mediaUrl) {
+      return res.status(404).json({ error: "无法获取原始文件地址" });
+    }
+
+    // Strategy 1: Check if VOD metadata already contains subtitle stream info
+    const vodSubtitleStreams = media.MetaData?.SubtitleStreamSet;
+    if (vodSubtitleStreams && vodSubtitleStreams.length > 0) {
+      const tracks = vodSubtitleStreams.map((s, idx) => ({
+        index: idx,
+        streamIndex: idx,
+        codec: s.Codec || "",
+        language: s.Language || "",
+        title: s.Language || "",
+      }));
+      // Filter out image-based subtitle formats
+      const textTracks = tracks.filter((t) =>
+        !["hdmv_pgs_subtitle", "dvb_subtitle", "dvd_subtitle", "pgssub"].includes(t.codec)
+      );
+      return res.json({ tracks: textTracks, mediaUrl });
+    }
+
+    // Strategy 2: Use ffprobe to probe subtitle tracks from the original file URL
+    const tracks = await probeSubtitlesFromUrl(mediaUrl);
+    const textTracks = tracks.filter((t) =>
+      !["hdmv_pgs_subtitle", "dvb_subtitle", "dvd_subtitle", "pgssub"].includes(t.codec)
+    );
+
+    res.json({ tracks: textTracks, mediaUrl });
+  } catch (err) {
+    console.error("[Subtitle] Error probing VOD file:", err);
+    res.status(500).json({ error: "字幕探测失败", detail: err.message });
+  }
+});
+
+/**
+ * GET /api/subtitles/vod/:fileId/:streamIndex — Extract a subtitle track as WebVTT
+ *
+ * Uses ffmpeg to extract the specified subtitle stream from the original VOD file.
+ * Caches extracted VTT files locally.
+ */
+app.get("/api/subtitles/vod/:fileId/:streamIndex", async (req, res) => {
+  const { fileId, streamIndex } = req.params;
+  const idx = parseInt(streamIndex, 10);
+
+  if (isNaN(idx) || idx < 0) {
+    return res.status(400).json({ error: "无效的字幕轨索引" });
+  }
+
+  // Check cache first
+  const vttFilename = `vod_${fileId}_sub${idx}.vtt`;
+  const vttPath = path.join(subtitlesDir, vttFilename);
+
+  if (fs.existsSync(vttPath)) {
+    return res.json({ url: `/subtitles/${vttFilename}` });
+  }
+
+  try {
+    // Get original file URL from VOD
+    const client = createVodClient();
+    const result = await client.DescribeMediaInfos({
+      FileIds: [fileId],
+      SubAppId: Number(VOD_APP_ID),
+      Filters: ["basicInfo"],
+    });
+
+    const media = result.MediaInfoSet?.[0];
+    const mediaUrl = media?.BasicInfo?.MediaUrl;
+    if (!mediaUrl) {
+      return res.status(404).json({ error: "无法获取原始文件地址" });
+    }
+
+    await extractSubtitleToVTT(mediaUrl, idx, vttPath);
+    res.json({ url: `/subtitles/${vttFilename}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message || "字幕提取失败" });
+  }
 });
 
 // ==================== HTTP Server & WebSocket ====================
