@@ -84,11 +84,13 @@ interface UseWebSocketOptions {
   onConnectionChange?: (connected: boolean) => void;
 }
 
+// 后端 WebSocket 运行在 3001 端口，前端在 80 端口
+// NEXT_PUBLIC_* 变量在 Next.js 构建时内联，运行时设置无效
+// 所以这里直接用 window.location.hostname + 固定后端端口
 const WS_URL =
-  process.env.NEXT_PUBLIC_WS_URL ||
-  (typeof window !== "undefined"
-    ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}`
-    : "ws://localhost:3001");
+  typeof window !== "undefined"
+    ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.hostname}:3001`
+    : "ws://localhost:3001";
 
 export function useWebSocket(options: UseWebSocketOptions = {}) {
   const wsRef = useRef<WebSocket | null>(null);

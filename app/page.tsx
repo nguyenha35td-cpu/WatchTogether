@@ -21,11 +21,18 @@ const DEMO_VIDEOS: VideoItem[] = [
   },
 ];
 
+// ==================== API Base URL ====================
+// 前端在 80 端口，后端在 3001 端口，浏览器直接请求后端
+function getApiBase() {
+  if (typeof window === "undefined") return "http://localhost:3001";
+  return `${window.location.protocol}//${window.location.hostname}:3001`;
+}
+
 // ==================== VOD Play URL Helper ====================
 
 async function fetchVodPlayUrl(fileId: string): Promise<string | null> {
   try {
-    const res = await fetch(`/api/video/${fileId}/playurl`);
+    const res = await fetch(`${getApiBase()}/api/video/${fileId}/playurl`);
     if (!res.ok) return null;
     const data = await res.json();
     return data.playUrl || null;
@@ -381,7 +388,7 @@ export default function WatchTogetherPage() {
 
         // Trigger transcoding on backend
         try {
-          await fetch("/api/upload/vod-complete", {
+          await fetch(`${getApiBase()}/api/upload/vod-complete`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ fileId }),
