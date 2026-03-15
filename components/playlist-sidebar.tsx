@@ -205,12 +205,12 @@ export function PlaylistSidebar({
                   )}
                 </div>
 
-                {/* Delete Button */}
+                {/* Delete Button — 始终可见，触屏设备没有 hover */}
                 {video.uploadProgress === undefined && (
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10 flex-shrink-0"
                     onClick={(e) => {
                       e.stopPropagation();
                       onDeleteVideo(video.id);
