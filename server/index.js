@@ -30,8 +30,12 @@ function generateVodSignature() {
     currentTimeStamp: current,
     expireTime: expired,
     random: Math.floor(Math.random() * 0xffffffff),
-    procedure: "LongVideoPreset", // VOD task flow for adaptive HLS transcoding
   };
+
+  // 使用子应用时必须在签名中带上 vodSubAppId，否则报 "signature has no permission"
+  if (VOD_APP_ID) {
+    params.vodSubAppId = Number(VOD_APP_ID);
+  }
 
   // Build query string (sorted keys)
   const queryString = Object.keys(params)
