@@ -428,6 +428,113 @@ app.get("/api/subtitles/vod/:fileId/:streamIndex", async (req, res) => {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
+// ==================== VOD File Cleanup ====================
+
+/**
+ * Track all uploaded VOD fileIds with their upload time for cleanup.
+ * vodFileTracker: Map<fileId, { uploadedAt: number, roomId: string | null }>
+ */
+const vodFileTracker = new Map();
+
+/**
+ * Delete a single VOD file from Tencent Cloud.
+ * Silently ignores errors (file may already be deleted).
+ */
+async function deleteVodFile(fileId) {
+  try {
+    const client = createVodClient();
+    await client.DeleteMedia({
+      FileId: fileId,
+      SubAppId: Number(VOD_APP_ID),
+    });
+    console.log(`[VOD Cleanup] Deleted VOD file: ${fileId}`);
+    // Also clean up subtitle cache
+    cleanupSubtitleCache(fileId);
+    vodFileTracker.delete(fileId);
+  } catch (err) {
+    // Ignore "file not found" errors — may already be deleted
+    if (err.code === "ResourceNotFound" || err.code === "ResourceNotFound.FileNotExist") {
+      console.log(`[VOD Cleanup] File already gone: ${fileId}`);
+      vodFileTracker.delete(fileId);
+    } else {
+      console.error(`[VOD Cleanup] Failed to delete ${fileId}:`, err.message);
+    }
+  }
+}
+
+/**
+ * Clean up subtitle VTT cache files for a given VOD fileId.
+ */
+function cleanupSubtitleCache(fileId) {
+  try {
+    const files = fs.readdirSync(subtitlesDir);
+    const prefix = `vod_${fileId}_`;
+    let cleaned = 0;
+    for (const file of files) {
+      if (file.startsWith(prefix)) {
+        fs.unlinkSync(path.join(subtitlesDir, file));
+        cleaned++;
+      }
+    }
+    if (cleaned > 0) {
+      console.log(`[VOD Cleanup] Cleaned ${cleaned} subtitle cache files for ${fileId}`);
+    }
+    // Also clear probe cache
+    probeCache.delete(fileId);
+  } catch (err) {
+    console.error(`[VOD Cleanup] Subtitle cache cleanup error:`, err.message);
+  }
+}
+
+/**
+ * Collect VOD fileIds from a room's playlist and delete them all.
+ * Called when a room is destroyed (all participants left).
+ */
+async function cleanupRoomVodFiles(roomId, playlist) {
+  const vodFileIds = playlist
+    .filter((v) => v.vodFileId)
+    .map((v) => v.vodFileId);
+
+  if (vodFileIds.length === 0) return;
+
+  console.log(`[VOD Cleanup] Room ${roomId} destroyed, cleaning ${vodFileIds.length} VOD files: ${vodFileIds.join(", ")}`);
+
+  // Delete all in parallel, don't await (fire-and-forget, don't block room cleanup)
+  Promise.allSettled(vodFileIds.map((fid) => deleteVodFile(fid)))
+    .then((results) => {
+      const succeeded = results.filter((r) => r.status === "fulfilled").length;
+      console.log(`[VOD Cleanup] Room ${roomId} cleanup done: ${succeeded}/${vodFileIds.length} files deleted`);
+    });
+}
+
+/**
+ * 24-hour safety net: periodically check vodFileTracker and delete files older than 24h.
+ * This handles edge cases like server restart losing room state.
+ */
+const VOD_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function startVodCleanupTimer() {
+  // Run every 30 minutes
+  setInterval(() => {
+    const now = Date.now();
+    let expiredCount = 0;
+
+    for (const [fileId, info] of vodFileTracker.entries()) {
+      if (now - info.uploadedAt > VOD_FILE_MAX_AGE_MS) {
+        expiredCount++;
+        console.log(`[VOD Cleanup] File ${fileId} expired (uploaded ${Math.round((now - info.uploadedAt) / 3600000)}h ago), deleting...`);
+        deleteVodFile(fileId);
+      }
+    }
+
+    if (expiredCount > 0) {
+      console.log(`[VOD Cleanup] Timer: found ${expiredCount} expired files`);
+    }
+  }, 30 * 60 * 1000); // every 30 min
+
+  console.log(`[VOD Cleanup] 24h safety-net timer started (checks every 30min)`);
+}
+
 // ==================== Room Management ====================
 
 /**
@@ -637,6 +744,15 @@ wss.on("connection", (ws) => {
         const { video } = payload;
         room.playlist.push(video);
 
+        // Track VOD fileId for 24h safety-net cleanup
+        if (video.vodFileId) {
+          vodFileTracker.set(video.vodFileId, {
+            uploadedAt: Date.now(),
+            roomId: currentRoomId,
+          });
+          console.log(`[VOD Cleanup] Tracking VOD file: ${video.vodFileId} (room: ${currentRoomId})`);
+        }
+
         broadcastToRoom(currentRoomId, {
           type: "playlist_updated",
           payload: { playlist: room.playlist },
@@ -649,6 +765,12 @@ wss.on("connection", (ws) => {
         if (!room2) return;
 
         const { videoId } = payload;
+        // Find the video before removing to clean up VOD file
+        const removedVideo = room2.playlist.find((v) => v.id === videoId);
+        if (removedVideo?.vodFileId) {
+          console.log(`[VOD Cleanup] Video removed from playlist, deleting VOD file: ${removedVideo.vodFileId}`);
+          deleteVodFile(removedVideo.vodFileId);
+        }
         room2.playlist = room2.playlist.filter((v) => v.id !== videoId);
 
         if (room2.currentVideoId === videoId) {
@@ -790,7 +912,8 @@ wss.on("connection", (ws) => {
     room.participants.delete(clientId);
 
     if (room.participants.size === 0) {
-      // Room is empty, remove room (no local files to clean up with VOD)
+      // Room is empty — clean up VOD files then remove room
+      cleanupRoomVodFiles(currentRoomId, room.playlist);
       rooms.delete(currentRoomId);
       console.log(`[Room] Deleted empty room: ${currentRoomId}`);
     } else {
@@ -837,4 +960,7 @@ server.listen(PORT, () => {
   console.log(`   HTTP: http://localhost:${PORT}`);
   console.log(`   WS:   ws://localhost:${PORT}`);
   console.log(`   VOD:  AppId=${VOD_APP_ID}, Region=${VOD_REGION}`);
+
+  // Start 24h safety-net cleanup timer
+  startVodCleanupTimer();
 });
