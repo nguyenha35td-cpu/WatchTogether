@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Slider } from "@/components/ui/slider";
+import { VideoProgressBar } from "@/components/video-progress-bar";
 import type { SubtitleTrack } from "@/components/playlist-sidebar";
 
 // Common language code to display name mapping
@@ -57,7 +58,7 @@ interface VideoPlayerProps {
   isSynced?: boolean;
   subtitleTracks?: SubtitleTrack[];
   activeSubtitleUrl?: string | null;
-  onSelectSubtitle?: (track: SubtitleTrack | null) => void;
+  onSelectSubtitle?: (track: SubtitleTrack | null) => void | Promise<void>;
 }
 
 export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
@@ -88,6 +89,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     const [showControls, setShowControls] = useState(true);
     const [isBuffering, setIsBuffering] = useState(false);
     const [showSubtitleMenu, setShowSubtitleMenu] = useState(false);
+    const [subtitleLoading, setSubtitleLoading] = useState<number | null>(null); // streamIndex being loaded
     const hideControlsTimeout = useRef<NodeJS.Timeout>();
     // Flag to suppress sync events when a remote command triggers local playback changes
     const isSyncActionRef = useRef(false);
@@ -127,8 +129,12 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     );
 
     const formatTime = (time: number) => {
-      const minutes = Math.floor(time / 60);
+      const hours = Math.floor(time / 3600);
+      const minutes = Math.floor((time % 3600) / 60);
       const seconds = Math.floor(time % 60);
+      if (hours > 0) {
+        return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds.toString().padStart(2, "0")}`;
+      }
       return `${minutes}:${seconds.toString().padStart(2, "0")}`;
     };
 
@@ -215,7 +221,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
         clearTimeout(hideControlsTimeout.current);
       }
       hideControlsTimeout.current = setTimeout(() => {
-        if (isPlaying) {
+        if (isPlaying && !showSubtitleMenu) {
           setShowControls(false);
         }
       }, 3000);
@@ -355,7 +361,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
         ref={containerRef}
         className="relative w-full aspect-video bg-background rounded-xl overflow-hidden group"
         onMouseMove={handleMouseMove}
-        onMouseLeave={() => isPlaying && setShowControls(false)}
+        onMouseLeave={() => isPlaying && !showSubtitleMenu && setShowControls(false)}
       >
         {/* Video Element — src managed by useEffect above */}
         <video
@@ -392,11 +398,11 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           </div>
         )}
 
-        {/* Center Play Button */}
-        {!isPlaying && (
+        {/* Center Play Button — z-10 so controls overlay (z-20) stays above */}
+        {!isPlaying && !showSubtitleMenu && (
           <button
             onClick={handlePlayPause}
-            className="absolute inset-0 flex items-center justify-center bg-black/20 transition-opacity"
+            className="absolute inset-0 z-10 flex items-center justify-center bg-black/20 transition-opacity"
           >
             <div className="w-20 h-20 rounded-full bg-primary/90 backdrop-blur-sm flex items-center justify-center transition-transform hover:scale-110">
               <Play
@@ -409,29 +415,41 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
         {/* Sync Badge */}
         {isSynced && (
-          <div className="absolute top-4 left-4 px-3 py-1.5 rounded-full bg-primary/20 backdrop-blur-md border border-primary/30 flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-300">
+          <div className="absolute top-4 left-4 z-30 px-3 py-1.5 rounded-full bg-primary/20 backdrop-blur-md border border-primary/30 flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-300">
             <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
             <span className="text-xs font-medium text-primary">已同步</span>
           </div>
         )}
 
-        {/* Controls Overlay */}
+        {/* Subtitle Loading Toast */}
+        {subtitleLoading !== null && (
+          <div className="absolute top-4 right-4 z-30 px-3 py-1.5 rounded-full bg-black/70 backdrop-blur-md border border-white/10 flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-300">
+            <div className="w-3 h-3 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+            <span className="text-xs font-medium text-white/80">正在提取字幕...</span>
+          </div>
+        )}
+
+        {/* Controls Overlay — z-20 to sit above center play button */}
         <div
           className={cn(
-            "absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 pt-16 transition-opacity duration-300",
+            "absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-black/90 via-black/50 to-transparent p-4 pt-16 transition-opacity duration-300",
             showControls || !isPlaying ? "opacity-100" : "opacity-0"
           )}
         >
-          {/* Progress Bar */}
-          <div className="mb-4">
-            <Slider
-              value={[currentTime]}
-              max={duration || 100}
-              step={0.1}
-              onValueChange={handleSeek}
-              className="cursor-pointer [&_[data-slot=slider-thumb]]:h-3 [&_[data-slot=slider-thumb]]:w-3 [&_[data-slot=slider-thumb]]:border-2 [&_[data-slot=slider-thumb]]:border-primary [&_[data-slot=slider-thumb]]:bg-primary [&_[data-slot=slider-track]]:h-1 hover:[&_[data-slot=slider-track]]:h-1.5 [&_[data-slot=slider-track]]:transition-all"
-            />
-          </div>
+          {/* Progress Bar with Time Tooltip & Video Preview */}
+          <VideoProgressBar
+            currentTime={currentTime}
+            duration={duration}
+            videoSrc={src}
+            onSeek={(time) => {
+              if (videoRef.current) {
+                videoRef.current.currentTime = time;
+                setCurrentTime(time);
+                onSeek?.(time);
+              }
+            }}
+            formatTime={formatTime}
+          />
 
           {/* Control Buttons */}
           <div className="flex items-center justify-between">
@@ -503,7 +521,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
               {subtitleTracks.length > 0 && (
                 <div className="relative">
                   <button
-                    onClick={() => setShowSubtitleMenu(!showSubtitleMenu)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setShowSubtitleMenu(!showSubtitleMenu);
+                    }}
                     className={cn(
                       "w-10 h-10 rounded-full flex items-center justify-center transition-colors",
                       activeSubtitleUrl
@@ -515,12 +536,18 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
                   </button>
 
                   {showSubtitleMenu && (
-                    <div className="absolute bottom-12 right-0 w-56 bg-black/90 backdrop-blur-md rounded-lg border border-white/10 shadow-xl overflow-hidden z-50">
+                    <div
+                      className="absolute bottom-12 right-0 w-56 bg-black/90 backdrop-blur-md rounded-lg border border-white/10 shadow-xl overflow-hidden z-50"
+                      onClick={(e) => e.stopPropagation()}
+                    >
                       {/* Header */}
                       <div className="flex items-center justify-between px-3 py-2 border-b border-white/10">
                         <span className="text-sm font-medium text-white">字幕轨道</span>
                         <button
-                          onClick={() => setShowSubtitleMenu(false)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowSubtitleMenu(false);
+                          }}
                           className="w-6 h-6 rounded-full hover:bg-white/10 flex items-center justify-center"
                         >
                           <X className="w-4 h-4 text-white/60" />
@@ -529,7 +556,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
 
                       {/* Off option */}
                       <button
-                        onClick={() => {
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSubtitleLoading(null);
                           onSelectSubtitle?.(null);
                           setShowSubtitleMenu(false);
                         }}
@@ -549,16 +578,32 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
                       {subtitleTracks.map((track) => {
                         const label = track.title || getLanguageLabel(track.language) || `字幕轨 ${track.streamIndex + 1}`;
                         const isActive = activeSubtitleUrl === track.vttUrl && !!track.vttUrl;
+                        const isLoading = subtitleLoading === track.streamIndex;
                         return (
                           <button
                             key={track.streamIndex}
-                            onClick={() => {
-                              onSelectSubtitle?.(track);
+                            disabled={isLoading}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (isLoading) return;
+                              setSubtitleLoading(track.streamIndex);
                               setShowSubtitleMenu(false);
+                              // Call onSelectSubtitle async; when it resolves, clear loading
+                              const result = onSelectSubtitle?.(track);
+                              if (result && typeof (result as Promise<void>).then === "function") {
+                                (result as Promise<void>).then(() => {
+                                  setSubtitleLoading(null);
+                                }).catch(() => {
+                                  setSubtitleLoading(null);
+                                });
+                              } else {
+                                setSubtitleLoading(null);
+                              }
                             }}
                             className={cn(
                               "w-full px-3 py-2 text-left text-sm hover:bg-white/10 transition-colors flex items-center gap-2",
-                              isActive ? "text-primary" : "text-white/80"
+                              isActive ? "text-primary" : "text-white/80",
+                              isLoading && "opacity-60 cursor-wait"
                             )}
                           >
                             <div className={cn(
@@ -566,7 +611,12 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
                               isActive ? "bg-primary" : "bg-transparent"
                             )} />
                             <span className="truncate">{label}</span>
-                            {track.language && (
+                            {isLoading && (
+                              <span className="ml-auto flex-shrink-0">
+                                <div className="w-3.5 h-3.5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                              </span>
+                            )}
+                            {!isLoading && track.language && (
                               <span className="text-xs text-white/40 ml-auto flex-shrink-0">
                                 {track.language.toUpperCase()}
                               </span>
@@ -574,6 +624,14 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
                           </button>
                         );
                       })}
+
+                      {/* Loading indicator at bottom when extraction is in progress */}
+                      {subtitleLoading !== null && (
+                        <div className="px-3 py-2 border-t border-white/10 flex items-center gap-2">
+                          <div className="w-3 h-3 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                          <span className="text-xs text-white/50">正在提取字幕...</span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

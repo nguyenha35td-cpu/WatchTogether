@@ -57,6 +57,8 @@ export default function WatchTogetherPage() {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSynced, setIsSynced] = useState(true);
   const [activeSubtitleUrl, setActiveSubtitleUrl] = useState<string | null>(null);
+  // Remember which subtitle track (streamIndex) was last selected for each video
+  const lastSelectedSubtitleRef = useRef<Map<string, number>>(new Map());
   const playerRef = useRef<VideoPlayerHandle>(null);
 
   // Track pending room action for when WebSocket connects
@@ -201,14 +203,19 @@ export default function WatchTogetherPage() {
 
     onSyncState: (state) => {
       if (state.playlist.length > 0) {
-        setVideos(
-          state.playlist.map((v) => ({
-            id: v.id,
-            title: v.title,
-            thumbnail: v.thumbnail,
-            duration: v.duration,
-            src: v.src,
-          }))
+        setVideos((prev) =>
+          state.playlist.map((v) => {
+            // Preserve locally-probed subtitleTracks when syncing state
+            const existing = prev.find((p) => p.id === v.id);
+            return {
+              id: v.id,
+              title: v.title,
+              thumbnail: v.thumbnail,
+              duration: v.duration,
+              src: v.src,
+              ...(existing?.subtitleTracks ? { subtitleTracks: existing.subtitleTracks } : {}),
+            };
+          })
         );
       }
       if (state.currentVideoId) {
@@ -295,11 +302,28 @@ export default function WatchTogetherPage() {
       if (!res.ok) return [];
       const data = await res.json();
       console.log("[Subtitle] Tracks received:", data.tracks);
-      return data.tracks || [];
+      // Server may already include vttUrl for pre-cached subtitles
+      return (data.tracks || []).map((t: SubtitleTrack & { vttUrl?: string }) => ({
+        ...t,
+        vttUrl: t.vttUrl ? `${backendUrl}${t.vttUrl}` : undefined,
+      }));
     } catch (err) {
       console.error("[Subtitle] Failed to probe subtitles:", err);
       return [];
     }
+  }, []);
+
+  // Helper: restore previously selected subtitle for a video
+  const restoreSubtitleForVideo = useCallback((videoId: string, tracks: SubtitleTrack[] | undefined) => {
+    const lastIdx = lastSelectedSubtitleRef.current.get(videoId);
+    if (lastIdx !== undefined && tracks) {
+      const track = tracks.find(t => t.streamIndex === lastIdx);
+      if (track?.vttUrl) {
+        setActiveSubtitleUrl(track.vttUrl);
+        return;
+      }
+    }
+    setActiveSubtitleUrl(null);
   }, []);
 
   // Helper: when selecting a VOD video (src = "vod://<fileId>"), resolve play URL
@@ -328,6 +352,8 @@ export default function WatchTogetherPage() {
             setCurrentVideo((prev) =>
               prev && prev.id === video.id ? { ...prev, subtitleTracks: tracks } : prev
             );
+            // Restore previously selected subtitle
+            restoreSubtitleForVideo(video.id, tracks);
           }
         });
       } else {
@@ -340,7 +366,7 @@ export default function WatchTogetherPage() {
         });
       }
     },
-    [probeSubtitleTracks]
+    [probeSubtitleTracks, restoreSubtitleForVideo]
   );
 
   // ==================== Video Actions ====================
@@ -370,14 +396,19 @@ export default function WatchTogetherPage() {
               setCurrentVideo((prev) =>
                 prev && prev.id === video.id ? { ...prev, subtitleTracks: tracks } : prev
               );
+              // Restore previously selected subtitle
+              restoreSubtitleForVideo(video.id, tracks);
             }
           });
+        } else {
+          // Tracks already probed, try to restore subtitle immediately
+          restoreSubtitleForVideo(video.id, video.subtitleTracks);
         }
       } else {
         setCurrentVideo(video);
       }
     },
-    [ws, probeSubtitleTracks]
+    [ws, probeSubtitleTracks, restoreSubtitleForVideo]
   );
 
   const handleDeleteVideo = useCallback(
@@ -409,16 +440,38 @@ export default function WatchTogetherPage() {
   }, [videos, currentVideo]);
 
   // Extract a specific subtitle track VTT from backend
+  // NEW: Uses fast MKV Range-based extraction — no polling needed, server responds directly
   const extractSubtitleVTT = useCallback(async (fileId: string, streamIndex: number): Promise<string | null> => {
+    const backendUrl = getApiBase();
+    const url = `${backendUrl}/api/subtitles/vod/${encodeURIComponent(fileId)}/${streamIndex}`;
+
     try {
-      const backendUrl = getApiBase();
-      const res = await fetch(`${backendUrl}/api/subtitles/vod/${encodeURIComponent(fileId)}/${streamIndex}`);
-      if (!res.ok) return null;
+      console.log("[Subtitle] Requesting extraction:", url);
+      const res = await fetch(url);
+      if (!res.ok) {
+        console.error("[Subtitle] API returned", res.status);
+        return null;
+      }
       const data = await res.json();
-      // Return full URL to the VTT file
-      return data.url ? `${backendUrl}${data.url}` : null;
+
+      if (data.status === "ready" && data.url) {
+        console.log("[Subtitle] Ready:", data.url);
+        return `${backendUrl}${data.url}`;
+      }
+
+      if (data.status === "failed") {
+        console.error("[Subtitle] Extraction failed:", data.error);
+        return null;
+      }
+
+      // Legacy format
+      if (data.url) {
+        return `${backendUrl}${data.url}`;
+      }
+
+      return null;
     } catch (err) {
-      console.error("[Subtitle] Failed to extract subtitle:", err);
+      console.error("[Subtitle] Extraction error:", err);
       return null;
     }
   }, []);
@@ -427,7 +480,16 @@ export default function WatchTogetherPage() {
   const handleSelectSubtitle = useCallback(async (track: SubtitleTrack | null) => {
     if (!track) {
       setActiveSubtitleUrl(null);
+      // Clear remembered selection for this video
+      if (currentVideo?.id) {
+        lastSelectedSubtitleRef.current.delete(currentVideo.id);
+      }
       return;
+    }
+
+    // Remember this selection for the current video
+    if (currentVideo?.id) {
+      lastSelectedSubtitleRef.current.set(currentVideo.id, track.streamIndex);
     }
 
     // If already extracted, use cached VTT URL
@@ -479,11 +541,17 @@ export default function WatchTogetherPage() {
             const res = await fetch(`${getApiBase()}/api/upload/vod-signature`);
             if (!res.ok) throw new Error("获取上传签名失败");
             const data = await res.json();
+            console.log("[VOD] 上传签名获取成功, storageRegion:", data.storageRegion);
             return data.signature;
           },
         });
 
-        const uploader = tcVod.upload({ mediaFile: file });
+        const uploader = tcVod.upload({
+          mediaFile: file,
+          chunkSize: 5 * 1024 * 1024,       // 5MB 分片，减少请求次数
+          parallel: 5,                        // 5 并发分片上传
+          enableResumableUpload: true,        // 断点续传
+        });
 
         // Track upload progress
         uploader.on("media_progress", (info: { percent: number }) => {
