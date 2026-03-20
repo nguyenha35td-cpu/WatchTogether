@@ -123,3 +123,10 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Video subtitle cue styling — reduce opaque black background for less visual intrusion */
+video::cue {
+  background-color: rgba(0, 0, 0, 0.4);
+  font-size: 1.1em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
