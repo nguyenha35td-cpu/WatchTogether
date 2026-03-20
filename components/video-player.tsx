@@ -359,7 +359,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
     return (
       <div
         ref={containerRef}
-        className="relative w-full aspect-video bg-background rounded-xl overflow-hidden group"
+        className={cn(
+          "relative w-full aspect-video bg-background rounded-xl overflow-hidden group",
+          isFullscreen && !showControls && isPlaying && "cursor-none"
+        )}
         onMouseMove={handleMouseMove}
         onMouseLeave={() => isPlaying && !showSubtitleMenu && setShowControls(false)}
       >
@@ -413,8 +416,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(
           </button>
         )}
 
-        {/* Sync Badge */}
-        {isSynced && (
+        {/* Sync Badge — hidden in fullscreen for immersive experience */}
+        {isSynced && !isFullscreen && (
           <div className="absolute top-4 left-4 z-30 px-3 py-1.5 rounded-full bg-primary/20 backdrop-blur-md border border-primary/30 flex items-center gap-2 animate-in fade-in slide-in-from-top-2 duration-300">
             <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
             <span className="text-xs font-medium text-primary">已同步</span>
