@@ -1,6 +1,6 @@
 "use client";
 
-import { Menu, X, MonitorPlay } from "lucide-react";
+import { Menu, X, MonitorPlay, History } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { RoomStatus, Participant } from "@/components/room-status";
 
@@ -14,6 +14,7 @@ interface HeaderProps {
   onSync: () => void;
   onLeaveRoom?: () => void;
   clientId?: string;
+  onOpenHistory?: () => void;
 }
 
 export function Header({
@@ -26,6 +27,7 @@ export function Header({
   onSync,
   onLeaveRoom,
   clientId,
+  onOpenHistory,
 }: HeaderProps) {
   return (
     <header className="h-16 bg-card/80 backdrop-blur-xl border-b border-border flex items-center justify-between px-4 sticky top-0 z-50">
@@ -62,6 +64,15 @@ export function Header({
 
       {/* Right Section */}
       <div className="flex items-center gap-2">
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onOpenHistory}
+          className="h-9 w-9 rounded-full hover:bg-accent"
+          title="上传历史"
+        >
+          <History className="w-4 h-4 text-muted-foreground" />
+        </Button>
         <RoomStatus
           roomId={roomId}
           participants={participants}

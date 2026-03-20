@@ -5,21 +5,13 @@ import { Header } from "@/components/header";
 import { PlaylistSidebar, VideoItem, SubtitleTrack } from "@/components/playlist-sidebar";
 import { VideoPlayer, VideoPlayerHandle } from "@/components/video-player";
 import { RoomJoin } from "@/components/room-join";
+import { UploadHistory, addUploadRecord } from "@/components/upload-history";
 import { Film, MonitorPlay, Users, Zap } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useWebSocket, Participant, RoomInfo } from "@/hooks/use-websocket";
 
-// Sample demo videos for pre-filling when creating a room
-const DEMO_VIDEOS: VideoItem[] = [
-  {
-    id: "1",
-    title: "Big Buck Bunny",
-    thumbnail:
-      "https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/Big_buck_bunny_poster_big.jpg/220px-Big_buck_bunny_poster_big.jpg",
-    duration: "9:56",
-    src: "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-  },
-];
+// Initial empty playlist (videos are added via upload)
+const INITIAL_VIDEOS: VideoItem[] = [];
 
 // ==================== API Base URL ====================
 // 前端在 80 端口，后端在 3001 端口，浏览器直接请求后端
@@ -52,11 +44,12 @@ export default function WatchTogetherPage() {
   const [isJoining, setIsJoining] = useState(false);
 
   // ==================== Video State ====================
-  const [videos, setVideos] = useState<VideoItem[]>(DEMO_VIDEOS);
+  const [videos, setVideos] = useState<VideoItem[]>(INITIAL_VIDEOS);
   const [currentVideo, setCurrentVideo] = useState<VideoItem | null>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isSynced, setIsSynced] = useState(true);
   const [activeSubtitleUrl, setActiveSubtitleUrl] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
   // Remember which subtitle track (streamIndex) was last selected for each video
   const lastSelectedSubtitleRef = useRef<Map<string, number>>(new Map());
   const playerRef = useRef<VideoPlayerHandle>(null);
@@ -234,7 +227,7 @@ export default function WatchTogetherPage() {
         const action = pendingActionRef.current;
         pendingActionRef.current = null;
         if (action.type === "create") {
-          ws.createRoom(action.userName, DEMO_VIDEOS);
+          ws.createRoom(action.userName, INITIAL_VIDEOS);
         } else if (action.type === "join" && action.roomCode) {
           ws.joinRoom(action.roomCode, action.userName);
         }
@@ -286,7 +279,7 @@ export default function WatchTogetherPage() {
     setClientId("");
     setParticipants([]);
     setCurrentVideo(null);
-    setVideos(DEMO_VIDEOS);
+    setVideos(INITIAL_VIDEOS);
     setIsSynced(true);
   }, [ws]);
 
@@ -599,6 +592,13 @@ export default function WatchTogetherPage() {
         );
         ws.addToPlaylist(newVideo);
 
+        // Record upload history via REST API (global, persistent)
+        addUploadRecord({
+          title: newVideo.title,
+          vodFileId: fileId,
+          uploadedBy: participants.find((p) => p.id === clientId)?.name || "未知用户",
+        });
+
         // Probe subtitle tracks AFTER the video entry is finalized
         probeSubtitleTracks(fileId).then((tracks) => {
           if (tracks.length > 0) {
@@ -681,6 +681,7 @@ export default function WatchTogetherPage() {
         onSync={handleSync}
         onLeaveRoom={handleLeaveRoom}
         clientId={clientId}
+        onOpenHistory={() => setHistoryOpen(true)}
       />
 
       <div className="flex-1 flex overflow-hidden">
@@ -823,6 +824,12 @@ export default function WatchTogetherPage() {
           isOpen={true}
         />
       </div>
+
+      {/* Upload History Panel */}
+      <UploadHistory
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      />
     </div>
   );
 }

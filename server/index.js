@@ -423,6 +423,84 @@ app.get("/api/subtitles/vod/:fileId/:streamIndex", async (req, res) => {
   }
 });
 
+// ==================== Global Upload History (JSON file persistence) ====================
+
+const UPLOAD_HISTORY_FILE = path.join(__dirname, "upload-history.json");
+const MAX_HISTORY_RECORDS = 500;
+
+/** Read upload history from disk */
+function readUploadHistory() {
+  try {
+    if (fs.existsSync(UPLOAD_HISTORY_FILE)) {
+      const raw = fs.readFileSync(UPLOAD_HISTORY_FILE, "utf-8");
+      return JSON.parse(raw);
+    }
+  } catch (err) {
+    console.error("[UploadHistory] Failed to read:", err.message);
+  }
+  return [];
+}
+
+/** Write upload history to disk */
+function writeUploadHistory(records) {
+  try {
+    fs.writeFileSync(UPLOAD_HISTORY_FILE, JSON.stringify(records, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[UploadHistory] Failed to write:", err.message);
+  }
+}
+
+// GET /api/upload-history — List all upload history records
+app.get("/api/upload-history", (req, res) => {
+  const records = readUploadHistory();
+  res.json({ records });
+});
+
+// POST /api/upload-history — Add a new record
+app.post("/api/upload-history", (req, res) => {
+  const { title, vodFileId, uploadedBy } = req.body;
+  if (!title) {
+    return res.status(400).json({ error: "缺少 title" });
+  }
+
+  const record = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    title,
+    vodFileId: vodFileId || "",
+    uploadedAt: Date.now(),
+    uploadedBy: uploadedBy || "未知用户",
+  };
+
+  const records = readUploadHistory();
+  records.unshift(record);
+  // Keep max records
+  if (records.length > MAX_HISTORY_RECORDS) {
+    records.length = MAX_HISTORY_RECORDS;
+  }
+  writeUploadHistory(records);
+
+  res.json({ record });
+});
+
+// DELETE /api/upload-history/:id — Delete a single record
+app.delete("/api/upload-history/:id", (req, res) => {
+  const { id } = req.params;
+  let records = readUploadHistory();
+  const before = records.length;
+  records = records.filter((r) => r.id !== id);
+  if (records.length === before) {
+    return res.status(404).json({ error: "记录不存在" });
+  }
+  writeUploadHistory(records);
+  res.json({ success: true });
+});
+
+// DELETE /api/upload-history — Clear all records
+app.delete("/api/upload-history", (req, res) => {
+  writeUploadHistory([]);
+  res.json({ success: true });
+});
+
 // ==================== HTTP Server & WebSocket ====================
 
 const server = http.createServer(app);

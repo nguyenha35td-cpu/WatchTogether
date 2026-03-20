@@ -62,6 +62,14 @@ export interface RoomInfo {
   playbackState: PlaybackState;
 }
 
+export interface UploadHistoryRecord {
+  id: string;
+  title: string;
+  vodFileId: string;
+  uploadedAt: number;
+  uploadedBy: string;
+}
+
 interface UseWebSocketOptions {
   onRoomCreated?: (roomId: string, clientId: string, room: RoomInfo) => void;
   onRoomJoined?: (roomId: string, clientId: string, room: RoomInfo) => void;
